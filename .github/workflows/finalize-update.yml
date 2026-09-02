@@ -29,6 +29,7 @@ jobs:
           npm init -y
           npm install --no-save app-builder-bin
           APP_BUILDER="$(node -p "require('app-builder-bin').appBuilderPath")"
+          chmod +x "$APP_BUILDER"
           "$APP_BUILDER" blockmap --input="release/${INSTALLER}" --output="release/${INSTALLER}.blockmap" --compression=gzip > release/blockmap-result.json
 
       - name: latest.yml erzeugen
