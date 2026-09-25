@@ -1,0 +1,10 @@
+{
+  "appId": "de.beurer.pacvue.bestand",
+  "version": "1.0.1",
+  "minBootstrap": "1.0.1",
+  "bundle": "1.0.1.bundle.gz",
+  "sha256": "a6236eba3a5550e0da6d02d3b5f77090db17b773a9c5d070c6e75794a074dee1",
+  "size": 75800,
+  "dependencies": "e5ba955d473bc1be712c1f8c0ab5ef188675c5938e14813fbb1f9eee913d1fcd",
+  "signature": "2YCiRNtR426bfYrotaZinN6Mbs8iN2WZfY/JFp1AgS8WvrlD+8sBz9etMlsCzQVWNsGOzNtKbt0vqIa0ojAWDw=="
+}
