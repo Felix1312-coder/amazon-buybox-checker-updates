@@ -1,5 +1,6 @@
 import base64, io, json, os, sqlite3, threading, time, uuid, webbrowser, sys, multiprocessing, hashlib, zipfile
 from datetime import datetime
+from contextlib import contextmanager
 from pathlib import Path
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse, parse_qs
@@ -11,8 +12,12 @@ DATA.mkdir(parents=True,exist_ok=True)
 LOCK=threading.Lock(); PROGRESS={'running':False,'text':'Bereit'}; TOKEN=uuid.uuid4().hex
 DISCOVERY={}
 
+@contextmanager
 def db():
-    c=sqlite3.connect(DATA/'monitor.sqlite', timeout=30); c.row_factory=sqlite3.Row; return c
+    c=sqlite3.connect(DATA/'monitor.sqlite', timeout=30); c.row_factory=sqlite3.Row
+    try:
+        with c: yield c
+    finally: c.close()
 with db() as c:
     c.executescript('''CREATE TABLE IF NOT EXISTS families(id TEXT PRIMARY KEY,name TEXT,market TEXT,variants TEXT, UNIQUE(name,market));
     CREATE TABLE IF NOT EXISTS checks(id INTEGER PRIMARY KEY, family_id TEXT, name TEXT, market TEXT, at TEXT, result TEXT, observations TEXT, expected TEXT);
