@@ -1,4 +1,5 @@
 import base64, io, json, os, sqlite3, threading, time, uuid, webbrowser, sys, multiprocessing, hashlib, zipfile
+import updater, runtime
 from datetime import datetime
 from contextlib import contextmanager
 from pathlib import Path
@@ -110,7 +111,7 @@ class Handler(BaseHTTPRequestHandler):
                 history=[dict(r) for r in c.execute('SELECT id,family_id,name,market,at,result FROM checks ORDER BY id DESC LIMIT 500')]
                 count=c.execute('SELECT COUNT(*) FROM checks').fetchone()[0]
                 latest={r['family_id']:json.loads(r['result']) for r in c.execute('SELECT c.family_id,c.result FROM checks c JOIN families f ON f.id=c.family_id WHERE c.id IN (SELECT MAX(id) FROM checks GROUP BY family_id) AND c.expected=f.variants AND c.market=f.market')}
-            return self.send({'families':families(),'history':history,'count':count,'latest':latest,'config':config(),'progress':PROGRESS,'discovery':DISCOVERY})
+            return self.send({'families':families(),'history':history,'count':count,'latest':latest,'config':config(),'progress':PROGRESS,'discovery':DISCOVERY,'updates':dict(updater.STATE),'version':updater.current_version()})
         if path=='/api/export':
             with db() as c:
                 rows=[dict(r) for r in c.execute('SELECT * FROM checks ORDER BY id')]
@@ -130,6 +131,15 @@ class Handler(BaseHTTPRequestHandler):
             size=int(self.headers.get('Content-Length','0'))
             if size>8_000_000: raise ValueError('Datei zu groß (max. ca. 5 MB).')
             d=json.loads(self.rfile.read(size)); path=urlparse(self.path).path
+            if path=='/api/update':
+                with LOCK:
+                    if PROGRESS['running']:raise ValueError('Bitte die laufende Prüfung abwarten.')
+                    updater.start(DATA/'updates',bool(d.get('install')))
+                return self.send({'message':'Update wird installiert.' if d.get('install') else 'Update-Prüfung gestartet.'})
+            if path=='/api/shortcut':
+                if sys.platform!='win32' or not getattr(sys,'frozen',False):raise ValueError('Nur in der installierten Windows-App verfügbar.')
+                runtime.create_shortcuts(Path(sys.executable))
+                return self.send({'message':'Desktop- und Startmenü-Verknüpfung erstellt.'})
             if path=='/api/import':
                 groups=parse_import(base64.b64decode(d['data']),d['filename'])
                 save_groups(groups)
@@ -224,6 +234,9 @@ if __name__=='__main__':
     multiprocessing.freeze_support()
     if sys.stdout is None: sys.stdout=open(os.devnull,'w')
     if sys.stderr is None: sys.stderr=open(os.devnull,'w')
+    if '--payload-probe' in sys.argv:
+        Path(sys.argv[sys.argv.index('--payload-probe')+1]).write_text(json.dumps({'version':updater.current_version(),'source':str(ROOT),'families':len(families())}),encoding='utf8')
+        raise SystemExit(0)
     if '--self-test' in sys.argv:
         import selftest
         selftest.run(sys.modules[__name__],sys.argv[sys.argv.index('--self-test')+1])
@@ -236,13 +249,14 @@ if __name__=='__main__':
             raise SystemExit(0)
     server=ThreadingHTTPServer(('127.0.0.1',0),Handler)
     url=f'http://127.0.0.1:{server.server_port}'
-    print('Amazon Variation Monitor 0.3.0\n'+url+'\nDieses Fenster für tägliche Prüfungen geöffnet lassen. Strg+C beendet die App.')
+    print('Amazon Variation Monitor 0.4.0\n'+url+'\nDieses Fenster für tägliche Prüfungen geöffnet lassen. Strg+C beendet die App.')
+    updater.start(DATA/'updates')
     threading.Thread(target=scheduler,daemon=True).start()
     threading.Thread(target=server.serve_forever,daemon=True).start()
     try:
         import webview
         webview.settings['ALLOW_DOWNLOADS']=True
-        window=webview.create_window('Amazon Variation Monitor 0.3.0',url,width=1360,height=920,min_size=(950,650),confirm_close=True)
+        window=webview.create_window('Amazon Variation Monitor '+updater.current_version(),url,width=1360,height=920,min_size=(950,650),confirm_close=True)
         webview.start(gui='edgechromium' if sys.platform=='win32' else None)
     except Exception as e:
         # A browser fallback keeps the app usable if WebView2 is absent.
