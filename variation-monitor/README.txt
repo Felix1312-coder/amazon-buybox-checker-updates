@@ -1,4 +1,4 @@
-AMAZON VARIATION MONITOR 0.2.0 – Windows-Testversion
+AMAZON VARIATION MONITOR 0.3.0 – Windows-Testversion
 
 START
 Amazon-Variation-Monitor.exe doppelklicken. Keine Python-Installation erforderlich.
@@ -13,22 +13,23 @@ Zeigt gefundene ASINs, Dimensionen und auslesbare Werte, ohne eine Soll-Familie 
 Eine einzelne ASIN ohne Soll-Vorgabe wird NICHT automatisch als korrekt bewertet.
 Ergebnis kann zur Kontrolle in die manuelle Familieneingabe übernommen werden.
 
-FAMILIE SPEICHERN / SOFORT PRÜFEN
-Familienname, Markt und ASINs eingeben, eine Zeile je ASIN.
-Optional: ASIN; Farbe; Stil; Größe. Nicht benötigte Werte leer lassen.
-Beispielaufbau (durch echte Child-ASINs ersetzen):
-ASIN; Taupe; Klassisch; M
-ASIN; Creme; Klassisch; L
-„Speichern & jetzt prüfen“ prüft sofort, unabhängig vom Zeitplan.
-„Jetzt alle prüfen“ bzw. „Prüfen“ je Familie sind ebenfalls jederzeit verfügbar.
+FAMILIE ANLEGEN / BEARBEITEN
+Unter Variantenfamilien: „Familie anlegen“ oder „Bearbeiten“ an einer gespeicherten Familie.
+Familienname und Marktplatz sind änderbar. ASINs können hinzugefügt/entfernt werden.
+Jede ASIN hat getrennte Felder. Über „Merkmal hinzufügen“ Typ auswählen und Soll-Wert eingeben.
+Typen: Stil/Style, Farbe/Color, Größe/Size. Mehrere Merkmale pro ASIN sind möglich.
+Ohne Merkmale werden nur ASIN-Verknüpfungen geprüft. Unvollständige Merkmale werden angezeigt.
+„Änderungen speichern“ oder „Speichern & jetzt prüfen“. Die Familien-ID und Historie bleiben erhalten.
+Änderungen werden nicht automatisch als neue Amazon-Beobachtung gewertet.
 
-EXCEL
-Vorlage in der App herunterladen. Pflicht: Familie, Marktplatz, ASIN.
-Optional: Variante (Anzeigename), Farbe, Stil, Größe.
-Gleicher Familienname + Marktplatz bildet eine gewünschte Familie.
-Mehrere Märkte in einer Zelle, z.B. DE,FR,IT, sind möglich.
-Merkmalswerte sind sprachabhängig; Soll-Werte in der Sprache des Marktes eintragen.
-Import ersetzt enthaltene Familien pro Markt vollständig. Andere bleiben erhalten.
+ADAPTIVE EXCEL-VORLAGE
+In der App Farbe, Stil und/oder Größe auswählen. Nur gewählte Spalten werden heruntergeladen.
+Ohne Auswahl: Familie, Marktplatz, ASIN. Gleicher Familienname + Markt bildet eine Soll-Familie.
+Mehrere Märkte in einer Zelle, z.B. DE,FR,IT. Leere Soll-Werte werden nicht geprüft.
+Merkmalstypen werden in den Sprachen der unterstützten Märkte erkannt (inkl. Arabisch).
+Freie Soll-Werte sind keine automatische Übersetzung: bitte den tatsächlichen Amazon-Text eingeben.
+50cm und 50 cm werden als gleich behandelt. Groß-/Kleinschreibung ist unerheblich.
+Import ersetzt enthaltene Familien je Markt vollständig; andere bleiben unverändert.
 
 WAS WIRD GEPRÜFT?
 Jede Soll-ASIN wird separat geöffnet. Farb-, Stil-, Größenvarianten und Kombinationen
