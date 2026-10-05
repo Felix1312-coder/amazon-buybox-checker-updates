@@ -1,9 +1,9 @@
-import base64, io, json, os, sqlite3, threading, time, uuid, webbrowser, sys, multiprocessing
+import base64, io, json, os, sqlite3, threading, time, uuid, webbrowser, sys, multiprocessing, hashlib, zipfile
 from datetime import datetime
 from pathlib import Path
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from urllib.parse import urlparse
-from core import parse_import, parse_manual, evaluate, scan_page, ASIN, MARKETS
+from urllib.parse import urlparse, parse_qs
+from core import parse_import, parse_manual, evaluate, scan_page, ASIN, MARKETS, parse_family, dimension_key
 
 ROOT=Path(__file__).resolve().parent
 DATA=Path(os.environ.get('LOCALAPPDATA', str(Path.home()))) / 'AmazonVariationMonitor'
@@ -22,8 +22,12 @@ with db() as c:
 def config():
     with db() as c: return json.loads(c.execute('SELECT value FROM settings WHERE key="config"').fetchone()[0])
 
+def with_revision(f):
+    f['revision']=hashlib.sha256(json.dumps([f['name'],f['market'],f['variants']],sort_keys=True).encode()).hexdigest()
+    return f
+
 def families():
-    with db() as c: return [{**dict(r),'variants':json.loads(r['variants'])} for r in c.execute('SELECT * FROM families ORDER BY name,market')]
+    with db() as c: return [with_revision({**dict(r),'variants':json.loads(r['variants'])}) for r in c.execute('SELECT * FROM families ORDER BY name,market')]
 
 def run(items, visible):
     try:
@@ -100,28 +104,20 @@ class Handler(BaseHTTPRequestHandler):
             with db() as c:
                 history=[dict(r) for r in c.execute('SELECT id,family_id,name,market,at,result FROM checks ORDER BY id DESC LIMIT 500')]
                 count=c.execute('SELECT COUNT(*) FROM checks').fetchone()[0]
-                latest={r['family_id']:json.loads(r['result']) for r in c.execute('SELECT c.family_id,c.result FROM checks c JOIN families f ON f.id=c.family_id WHERE c.id IN (SELECT MAX(id) FROM checks GROUP BY family_id) AND c.expected=f.variants')}
+                latest={r['family_id']:json.loads(r['result']) for r in c.execute('SELECT c.family_id,c.result FROM checks c JOIN families f ON f.id=c.family_id WHERE c.id IN (SELECT MAX(id) FROM checks GROUP BY family_id) AND c.expected=f.variants AND c.market=f.market')}
             return self.send({'families':families(),'history':history,'count':count,'latest':latest,'config':config(),'progress':PROGRESS,'discovery':DISCOVERY})
         if path=='/api/export':
             with db() as c:
                 rows=[dict(r) for r in c.execute('SELECT * FROM checks ORDER BY id')]
             return self.send(rows)
         if path=='/api/template':
-            from openpyxl import Workbook
-            from openpyxl.styles import Font, PatternFill
-            w=Workbook(); s=w.active; s.title='Varianten'
-            s.append(['Familie','Marktplatz','ASIN','Variante','Farbe','Stil','Größe'])
-            for cell in s[1]: cell.font=Font(bold=True,color='FFFFFF'); cell.fill=PatternFill('solid',fgColor='193D37')
-            for col,width in [('A',30),('B',25),('C',20),('D',30),('E',22),('F',22),('G',22)]: s.column_dimensions[col].width=width
-            s.freeze_panes='A2'; s.auto_filter.ref='A1:G1'
-            h=w.create_sheet('Anleitung'); h.append(['Eine Zeile pro Child-ASIN. Gleiche Familie + Marktplatz = gewünschte Verknüpfung.'])
-            h.append(['Marktplätze: DE, FR, IT, ES, UK, NL, PL, SE, BE, AE. Mehrere durch Komma trennen.'])
-            h.append(['Import ersetzt nur enthaltene Familien/Marktplätze vollständig. Andere bleiben erhalten.'])
-            h.append(['Variante ist ein Anzeigetext. Optionale Spalten Farbe, Stil, Größe werden pro ASIN mit den ausgelesenen Merkmalen verglichen.'])
-            h.append(['Soll-Merkmale in der Sprache des jeweiligen Marktplatzes eintragen. Leer lassen, wenn nur Verknüpfungen geprüft werden sollen. Keine Parent-ASIN.'])
-            h.column_dimensions['A'].width=120
-            out=io.BytesIO(); w.save(out)
-            return self.send(out.getvalue(),'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
+            query=parse_qs(urlparse(self.path).query,keep_blank_values=True)
+            dims=[dimension_key(x) for x in query.get('dims',[''])[0].split(',') if x.strip()]
+            if any(x not in ('color','style','size') for x in dims):return self.send({'error':'Ungültige Merkmalsauswahl.'},code=400)
+            mask=sum(1<<i for i,k in enumerate(('color','style','size')) if k in dims)
+            with zipfile.ZipFile(io.BytesIO(base64.b64decode((ROOT/'templates.bundle.b64').read_bytes()))) as z:
+                content=z.read(f'template-{mask}.xlsx')
+            return self.send(content,'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
         return self.send({'error':'Nicht gefunden'},code=404)
     def do_POST(self):
         if self.headers.get('X-Token')!=TOKEN: return self.send({'error':'Zugriff abgelehnt'},code=403)
@@ -133,6 +129,11 @@ class Handler(BaseHTTPRequestHandler):
                 groups=parse_import(base64.b64decode(d['data']),d['filename'])
                 save_groups(groups)
                 return self.send({'message':f'{len(groups)} Familien/Marktplätze importiert.'})
+            if path=='/api/family':
+                family=parse_family(d)
+                ids=save_groups([family],edit_id=d.get('id'),revision=d.get('revision'))
+                if d.get('run'):start(ids)
+                return self.send({'message':'Änderungen gespeichert.' if d.get('id') else 'Familie gespeichert.','id':ids[0]})
             if path=='/api/manual':
                 ids=save_groups(parse_manual(d))
                 if d.get('run'): start(ids)
@@ -155,20 +156,32 @@ class Handler(BaseHTTPRequestHandler):
             raise ValueError('Unbekannte Aktion.')
         except Exception as e: self.send({'error':str(e)},code=400)
 
-def save_groups(groups):
+def save_groups(groups,edit_id=None,revision=None):
     with LOCK:
         if PROGRESS['running']: raise ValueError('Bitte die laufende Prüfung abwarten.')
-        incoming={(g['name'],g['market']) for g in groups}
-        owners={(g['market'],a):g['name'] for g in families() if (g['name'],g['market']) not in incoming for a in g['variants']}
+        stored=families();incoming={(g['name'],g['market']) for g in groups}
+        if edit_id:
+            old=next((f for f in stored if f['id']==edit_id),None)
+            if not old:raise ValueError('Diese Familie wurde inzwischen entfernt. Bitte Ansicht aktualisieren.')
+            if revision!=old['revision']:raise ValueError('Die Familie wurde inzwischen geändert. Bitte Bearbeiten erneut öffnen.')
+            if len(groups)!=1:raise ValueError('Bitte genau eine Familie bearbeiten.')
+            if any(f['id']!=edit_id and (f['name'],f['market']) in incoming for f in stored):
+                raise ValueError('Eine andere Familie mit diesem Namen und Markt existiert bereits.')
+        owners={(g['market'],a):g['name'] for g in stored if g['id']!=edit_id and (g['name'],g['market']) not in incoming for a in g['variants']}
         for g in groups:
             for asin in g['variants']:
                 if (g['market'],asin) in owners: raise ValueError(f'{asin} ist in {g["market"]} bereits der Familie {owners[(g["market"],asin)]} zugeordnet.')
         ids=[]
         with db() as c:
             for g in groups:
-                c.execute('INSERT INTO families VALUES(?,?,?,?) ON CONFLICT(name,market) DO UPDATE SET variants=excluded.variants',
-                  (uuid.uuid4().hex,g['name'],g['market'],json.dumps(g['variants'])))
-                ids.append(c.execute('SELECT id FROM families WHERE name=? AND market=?',(g['name'],g['market'])).fetchone()[0])
+                if edit_id:
+                    c.execute('UPDATE families SET name=?,market=?,variants=? WHERE id=?',
+                        (g['name'],g['market'],json.dumps(g['variants']),edit_id))
+                    ids.append(edit_id)
+                else:
+                    c.execute('INSERT INTO families VALUES(?,?,?,?) ON CONFLICT(name,market) DO UPDATE SET variants=excluded.variants',
+                        (uuid.uuid4().hex,g['name'],g['market'],json.dumps(g['variants'])))
+                    ids.append(c.execute('SELECT id FROM families WHERE name=? AND market=?',(g['name'],g['market'])).fetchone()[0])
         return ids
 
 def start_discovery(d):
@@ -218,12 +231,13 @@ if __name__=='__main__':
             raise SystemExit(0)
     server=ThreadingHTTPServer(('127.0.0.1',0),Handler)
     url=f'http://127.0.0.1:{server.server_port}'
-    print('Amazon Variation Monitor 0.2.0\n'+url+'\nDieses Fenster für tägliche Prüfungen geöffnet lassen. Strg+C beendet die App.')
+    print('Amazon Variation Monitor 0.3.0\n'+url+'\nDieses Fenster für tägliche Prüfungen geöffnet lassen. Strg+C beendet die App.')
     threading.Thread(target=scheduler,daemon=True).start()
     threading.Thread(target=server.serve_forever,daemon=True).start()
     try:
         import webview
-        window=webview.create_window('Amazon Variation Monitor 0.2.0',url,width=1360,height=920,min_size=(950,650),confirm_close=True)
+        webview.settings['ALLOW_DOWNLOADS']=True
+        window=webview.create_window('Amazon Variation Monitor 0.3.0',url,width=1360,height=920,min_size=(950,650),confirm_close=True)
         webview.start(gui='edgechromium' if sys.platform=='win32' else None)
     except Exception as e:
         # A browser fallback keeps the app usable if WebView2 is absent.
