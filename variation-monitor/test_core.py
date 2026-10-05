@@ -39,3 +39,22 @@ class DimensionsTests(unittest.TestCase):
   with self.assertRaises(ValueError):parse_import(b'','x.csv')
  def test_conflicting_attributes(self):
   with self.assertRaises(ValueError):parse_import(f'Familie;Marktplatz;ASIN;Stil\nA;DE;{A};X\nA;DE;{A};Y'.encode(),'a.csv')
+
+class EditorTests(unittest.TestCase):
+ def test_localized_types(self):
+  from core import dimension_key
+  cases={'Farbe':'color','color_name':'color','Couleur':'color','Colore':'color','Kleur':'color','Kolor':'color','Färg':'color','اللون':'color','Nome stile':'style','Nombre de estilo':'style','Stijl':'style','Styl':'style','اسم النمط':'style','Größe':'size','size_name':'size','Taille':'size','Taglia':'size','Tamaño':'size','Maat':'size','Rozmiar':'size','Storlek':'size','المقاس':'size'}
+  for raw,expected in cases.items():self.assertEqual(dimension_key(raw),expected,raw)
+ def test_fields(self):
+  from core import parse_family
+  r=parse_family({'name':'A','market':'IT','variants':[{'asin':A,'attributes':[{'type':'Nome stile','value':'Classico'},{'type':'Größe','value':'50cm'}]}]})
+  self.assertEqual(r['variants'][A]['attributes'],{'style':'Classico','size':'50cm'})
+ def test_incomplete_field(self):
+  from core import parse_family
+  with self.assertRaises(ValueError):parse_family({'name':'A','market':'IT','variants':[{'asin':A,'attributes':[{'type':'color','value':''}]}]})
+ def test_translated_headers(self):
+  r=parse_import(f'Familie;Marktplatz;ASIN;Colore;Nome stile;Taglia\nA;IT;{A};Giallo;Classico;50 cm'.encode(),'x.csv')
+  self.assertEqual(r[0]['variants'][A]['attributes'],{'color':'Giallo','style':'Classico','size':'50 cm'})
+ def test_size_spacing(self):
+  from core import normalize_value
+  self.assertEqual(normalize_value('50 cm'),normalize_value('50cm'))
