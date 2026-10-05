@@ -23,7 +23,7 @@ jobs:
         run: python -m unittest discover -v
       - name: Build Windows executable
         working-directory: variation-monitor
-        run: python -m PyInstaller --noconfirm --clean --onefile --windowed --name Amazon-Variation-Monitor --add-data "ui.html;." --collect-all playwright app.py
+        run: python -m PyInstaller --noconfirm --clean --onefile --windowed --name Amazon-Variation-Monitor --add-data "ui.html;." --add-data "templates.bundle.b64;." --collect-all playwright app.py
       - name: Smoke-test packaged EXE offline
         working-directory: variation-monitor
         shell: pwsh
@@ -45,7 +45,7 @@ jobs:
           Get-FileHash dist/Amazon-Variation-Monitor.exe -Algorithm SHA256 | Format-List | Out-File dist/SHA256.txt
       - uses: actions/upload-artifact@v4
         with:
-          name: Amazon-Variation-Monitor-0.2.0-Windows
+          name: Amazon-Variation-Monitor-0.3.0-Windows
           path: variation-monitor/dist/*
           retention-days: 14
       - uses: actions/upload-artifact@v4
@@ -54,3 +54,31 @@ jobs:
           name: Variation-Monitor-Windows-QA
           path: variation-monitor/qa/*
           retention-days: 14
+      - name: Prepare verified EXE transfer parts
+        working-directory: variation-monitor
+        shell: python
+        run: |
+          from pathlib import Path
+          import hashlib,json
+          data=Path('dist/Amazon-Variation-Monitor.exe').read_bytes()
+          Path('parts').mkdir()
+          size=24*1024*1024
+          for i,start in enumerate(range(0,len(data),size)):
+              Path(f'parts/exe.part{i}').write_bytes(data[start:start+size])
+          Path('parts/manifest.json').write_text(json.dumps({'size':len(data),'sha256':hashlib.sha256(data).hexdigest()}))
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Variation-EXE-part0
+          path: variation-monitor/parts/exe.part0
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Variation-EXE-part1
+          path: variation-monitor/parts/exe.part1
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Variation-EXE-part2
+          path: variation-monitor/parts/exe.part2
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Variation-EXE-manifest
+          path: variation-monitor/parts/manifest.json
