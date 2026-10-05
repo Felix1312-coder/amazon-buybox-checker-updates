@@ -57,8 +57,34 @@ def run(app,output):
             assert set(raw['asins'])=={'B000000001','B000000002','B000000003'},raw
             assert raw['attributes']['style_name']=='Modern',raw
             assert raw['attributes']['size_name']=='L',raw
+            page.set_content('''<span id="productTitle">Fixture IT</span><input id="ASIN" value="B0CP983KKH"><div id="twister-plus-inline-twister"><div id="inline-twister-row-style_name"><span>Nome stile:</span><span id="inline-twister-expanded-dimension-text-style_name">Aerosol per bambini</span><li data-asin="B0CP983KKH"></li><li data-asin="B01KWTC5YW"></li></div><div id="inline-twister-row-size_name"><span id="inline-twister-dim-title-size_name">Taglia: <b class="a-text-bold">50 cm</b></span></div></div>''')
+            modern=page.evaluate(EXTRACT)
+            assert modern['attributes']['style_name']=='Aerosol per bambini',modern
+            assert modern['attributes']['size_name']=='50 cm',modern
+            assert set(modern['asins'])=={'B0CP983KKH','B01KWTC5YW'},modern
             browser.close()
-        result.update(ok=True,browser='Microsoft Edge',checks=['Frozen UI assets','Playwright driver + Edge','Family creation and editing with stable identity','Adaptive XLSX download and columns','Style and size extraction','Recommendation exclusion','openpyxl import','webview import'])
+        # Exercise real frozen launcher loading a new payload through the SAME executable.
+        import runtime,hashlib,io,subprocess,zipfile
+        shortcut_dir=destination.parent/'shortcuts'
+        runtime.create_shortcuts(Path(sys.executable),shortcut_dir)
+        assert (shortcut_dir/'Amazon Variation Monitor.lnk').exists()
+        files={name:(app.ROOT/name).read_bytes() for name in runtime.REQUIRED}
+        meta=json.loads(files['version.json']);meta['version']='0.4.1'
+        files['version.json']=json.dumps(meta).encode()
+        blob=io.BytesIO()
+        with zipfile.ZipFile(blob,'w',zipfile.ZIP_DEFLATED) as z:
+            for name,value in files.items():z.writestr(name,value)
+        before=hashlib.sha256(Path(sys.executable).read_bytes()).hexdigest()
+        runtime.install_bundle(blob.getvalue(),{'app_id':runtime.APP_ID,'version':'0.4.1','launcher_protocol':1,'sha256':hashlib.sha256(blob.getvalue()).hexdigest()},app.DATA/'updates')
+        probe=destination.parent/'payload-probe.json'
+        subprocess.run([sys.executable,'--payload-probe',str(probe)],check=True,timeout=60)
+        loaded=json.loads(probe.read_text(encoding='utf8'))
+        assert loaded['version']=='0.4.1',loaded
+        assert 'versions' in loaded['source'],loaded
+        assert loaded['families']==1,loaded
+        assert before==hashlib.sha256(Path(sys.executable).read_bytes()).hexdigest()
+        (app.DATA/'updates'/'active.json').unlink()
+        result.update(ok=True,browser='Microsoft Edge',checks=['Desktop shortcut creation','Frozen launcher loads updated payload without EXE replacement','Existing family preserved across payload update','Frozen UI assets','Playwright driver + Edge','Family creation and editing with stable identity','Adaptive XLSX download and columns','Legacy and modern inline twister style/size extraction','Recommendation exclusion','openpyxl import','webview import'])
     except Exception as e:
         result['error']=repr(e)
         raise
