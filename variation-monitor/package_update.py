@@ -2,7 +2,7 @@
 import hashlib, json, shutil, zipfile
 from pathlib import Path
 import runtime
-VERSION='0.4.0'
+VERSION='0.4.1'
 ROOT=Path(__file__).parent
 OUT=ROOT/'release';OUT.mkdir(exist_ok=True)
 meta={'app_id':runtime.APP_ID,'version':VERSION,'launcher_protocol':runtime.PROTOCOL,'files':{n:hashlib.sha256((ROOT/n).read_bytes()).hexdigest() for n in sorted(runtime.REQUIRED-{'version.json'})}}

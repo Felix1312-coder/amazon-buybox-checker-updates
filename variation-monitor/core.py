@@ -2,6 +2,28 @@ import re, json, csv, io, unicodedata
 from collections import defaultdict
 
 MARKETS = {'DE':'de','FR':'fr','IT':'it','ES':'es','UK':'co.uk','NL':'nl','PL':'pl','SE':'se','BE':'com.be','AE':'ae'}
+MARKET_LOCALES={'DE':'de-DE','FR':'fr-FR','IT':'it-IT','ES':'es-ES','UK':'en-GB','NL':'nl-NL','PL':'pl-PL','SE':'sv-SE','BE':'fr-BE','AE':'en-AE'}
+
+def market_browser_options(market):
+    locale=MARKET_LOCALES[market]
+    return {'viewport':{'width':1360,'height':900},'locale':locale,
+            'extra_http_headers':{'Accept-Language':locale+','+locale.split('-')[0]+';q=0.9'}}
+
+def market_product_url(market,asin):
+    return f'https://www.amazon.{MARKETS[market]}/dp/{asin}?language={MARKET_LOCALES[market].replace("-","_")}'
+
+def page_language_error(raw,market):
+    expected=MARKET_LOCALES[market].split('-')[0]
+    signals=[raw.get('html_language',''),raw.get('nav_language','')]
+    detected=[]
+    for value in signals:
+        value=str(value).strip().lower().replace('_','-')
+        if re.fullmatch(r'[a-z]{2}(?:-[a-z]{2})?',value):detected.append(value.split('-')[0])
+    if any(value!=expected for value in detected):
+        return f'Amazon-Seitensprache stimmt nicht: erwartet {expected.upper()}, erkannt {", ".join(sorted(set(detected))).upper()}. Merkmalswerte werden nicht sprachübergreifend verglichen.'
+    if not detected:return 'Amazon-Seitensprache nicht sicher erkannt. Merkmalsvergleich daher unklar.'
+    return ''
+
 ASIN = re.compile(r'^[A-Z0-9]{10}$')
 
 def parse_import(data, filename):
@@ -69,6 +91,14 @@ def evaluate(expected, observations):
         seen = set(o.get('asins',[])); missing = expected-seen; extra = seen-expected
         changes=[]; unknown=[]
         actual=o.get('attributes',{}).get(asin,{})
+        language_issue=o.get('language_error') if expected_attributes(expected_map.get(asin)) else ''
+        if language_issue:
+            uncertain=True
+            if missing or extra:
+                deviations=True
+                details.append({'asin':asin,'type':'abweichung','missing':sorted(missing),'extra':sorted(extra),'changes':[],'text':'ASIN-Verknüpfung weicht ab. '+language_issue})
+            else:details.append({'asin':asin,'type':'unklar','text':language_issue})
+            continue
         for key,wanted in expected_attributes(expected_map.get(asin)).items():
             if key not in actual: unknown.append(DIMENSION_NAMES.get(key,key))
             elif normalize_value(wanted)!=normalize_value(actual[key]): changes.append({'dimension':DIMENSION_NAMES.get(key,key),'expected':wanted,'actual':actual[key]})
@@ -110,14 +140,14 @@ EXTRACT = r'''() => {
    for (const a of ['data-asin','data-defaultasin']) {const s=el.getAttribute(a)||''; if(/^[A-Z0-9]{10}$/.test(s))ids.add(s);}
    for (const a of ['data-dp-url','href','value']) {const m=(el.getAttribute(a)||'').match(/\/(?:dp|gp\/product)\/([A-Z0-9]{10})/); if(m)ids.add(m[1]);}
  }
- return {title:document.querySelector('#productTitle')?.textContent.trim()||'', current:document.querySelector('input#ASIN')?.value||'',
+ return {html_language:document.documentElement.lang||'', nav_language:document.querySelector('#icp-nav-flyout .icp-nav-link-inner')?.innerText.trim()||'', title:document.querySelector('#productTitle')?.textContent.trim()||'', current:document.querySelector('input#ASIN')?.value||'',
    attributes, dimensions, asins:[...ids], scripts:[...document.scripts].map(s=>s.textContent).filter(s=>/asinVariationValues|dimensionToAsinMap|variationValues|dimensionValuesDisplayData/.test(s)),
    blocked:!!document.querySelector('#captchacharacters, form[action*="validateCaptcha"], input[name="cvf_captcha_input"]'),
    labels:scopes.map(x=>x.innerText.trim()).filter(Boolean)};
 }'''
 
 def scan_page(page, market, asin):
-    url = f'https://www.amazon.{MARKETS[market]}/dp/{asin}'
+    url = market_product_url(market,asin)
     page.goto(url, wait_until='domcontentloaded', timeout=35000)
     for selector in ['#sp-cc-accept', 'input[name="accept"]']:
         try:
@@ -127,7 +157,7 @@ def scan_page(page, market, asin):
     except Exception: pass
     page.wait_for_timeout(1500)
     raw=page.evaluate(EXTRACT)
-    result={'url':page.url,'title':raw['title'],'labels':raw['labels'],'detected_attributes':raw.get('attributes',{}),'detected_dimensions':raw.get('dimensions',[])}
+    result={'url':page.url,'title':raw['title'],'labels':raw['labels'],'detected_attributes':raw.get('attributes',{}),'detected_dimensions':raw.get('dimensions',[]),'language_error':page_language_error(raw,market),'language':{'expected':MARKET_LOCALES[market],'html':raw.get('html_language',''),'navigation':raw.get('nav_language','')}}
     if raw['blocked'] or not raw['title']: return {**result,'error':'Amazon-Seite blockiert oder Produkt nicht geladen.'}
     current=raw['current']
     if current != asin: return {**result,'error':f'ASIN nicht eindeutig bestätigt / Weiterleitung: {current or page.url}'}

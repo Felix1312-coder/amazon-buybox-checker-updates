@@ -5,7 +5,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse, parse_qs
-from core import parse_import, parse_manual, evaluate, scan_page, ASIN, MARKETS, parse_family, dimension_key
+from core import parse_import, parse_manual, evaluate, scan_page, ASIN, MARKETS, parse_family, dimension_key, market_browser_options
 
 ROOT=Path(__file__).resolve().parent
 DATA=Path(os.environ.get('LOCALAPPDATA', str(Path.home()))) / 'AmazonVariationMonitor'
@@ -46,17 +46,19 @@ def run(items, visible):
                     browser=p.chromium.launch(channel=channel,headless=not visible); break
                 except Exception: pass
             if not browser: raise RuntimeError('Kein Browser verfügbar. Bitte Microsoft Edge oder Google Chrome installieren.')
-            context=browser.new_context(viewport={'width':1360,'height':900})
-            page=context.new_page()
+            pages={}
             try:
                 for f in items:
+                    if f['market'] not in pages:
+                        pages[f['market']]=browser.new_context(**market_browser_options(f['market'])).new_page()
+                    page=pages[f['market']]
                     observations={}
                     for asin in f['variants']:
                         PROGRESS['text']=f'{done+1}/{total} · {f["name"]} · {f["market"]} · {asin}'
                         try:
                             o=scan_page(page,f['market'],asin)
                             provisional=evaluate(f['variants'],{asin:o})
-                            if o.get('error') or any(d['type']=='abweichung' for d in provisional['details']):
+                            if o.get('error') or o.get('language_error') or any(d['type']=='abweichung' for d in provisional['details']):
                                 page.wait_for_timeout(2000)
                                 second=scan_page(page,f['market'],asin)
                                 if o.get('valid') and second.get('valid') and (o.get('asins'),o.get('attributes')) != (second.get('asins'),second.get('attributes')):
@@ -218,9 +220,9 @@ def discover(asin,market,visible):
                 except Exception:pass
             if not browser:raise RuntimeError('Bitte Microsoft Edge oder Google Chrome installieren.')
             try:
-                page=browser.new_page(viewport={'width':1360,'height':900})
+                page=browser.new_context(**market_browser_options(market)).new_page()
                 o=scan_page(page,market,asin)
-                if o.get('error'):o=scan_page(page,market,asin)
+                if o.get('error') or o.get('language_error'):o=scan_page(page,market,asin)
                 DISCOVERY.update(asin=asin,market=market,observation=o)
                 PROGRESS['text']='ASIN-Test fertig. Ergebnis unter „Manuell testen“.'
             finally:browser.close()

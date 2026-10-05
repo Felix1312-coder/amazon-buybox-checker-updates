@@ -6,14 +6,14 @@ import runtime,updater
 class UpdateTests(unittest.TestCase):
     def setUp(self):
         self.temp=tempfile.TemporaryDirectory();self.root=Path(self.temp.name)
-        self.bundle=(Path(__file__).parent/'release'/'variation-monitor-0.4.0.zip').read_bytes()
         self.manifest=json.loads((Path(__file__).parent/'release'/'latest.json').read_text())
+        self.bundle=(Path(__file__).parent/'release'/('variation-monitor-'+self.manifest['version']+'.zip')).read_bytes()
     def tearDown(self):self.temp.cleanup()
     def test_install_preserves_user_data_and_loads_payload(self):
         db=self.root/'monitor.sqlite';db.write_bytes(b'existing-user-data')
         runtime.install_bundle(self.bundle,self.manifest,self.root/'updates')
         chosen=runtime.active_payload(self.root/'updates',Path(__file__).parent/'payload')
-        self.assertIn('versions',str(chosen));self.assertEqual(runtime.validate_payload(chosen)['version'],'0.4.0')
+        self.assertIn('versions',str(chosen));self.assertEqual(runtime.validate_payload(chosen)['version'],self.manifest['version'])
         self.assertEqual(db.read_bytes(),b'existing-user-data')
     def test_corrupted_download_keeps_active(self):
         runtime.install_bundle(self.bundle,self.manifest,self.root)

@@ -40,8 +40,9 @@ async function download(path,name){try{let r=await fetch(path,{headers:{'X-Token
 function discoverAsin(){action('/api/discover',{asin:document.getElementById('testasin').value,market:document.getElementById('testmarket').value})}
 function renderDiscovery(){let d=state.discovery,e=document.getElementById('discoveryresult');if(!d?.observation){e.innerHTML='';return}let o=d.observation;
  e.innerHTML=`<h3>${esc(o.title||d.asin)} · ${esc(d.market)}</h3>${o.error?'<p class="pill Unklar">'+esc(o.error)+'</p>':''}<p>Erkannte Merkmale: ${(o.dimensions||[]).map(k=>esc(dimnames[k]||k)).join(', ')||'nicht sicher auslesbar'}</p>`;
+ if(o.language_error)e.innerHTML+='<p class="pill Unklar">'+esc(o.language_error)+'</p>';
  if(o.asins?.length)e.innerHTML+='<div class="scroll"><table><thead><tr><th>Gefundene ASIN</th><th>Merkmale</th></tr></thead><tbody>'+o.asins.map(a=>'<tr><td>'+asinlink(a,d.market)+'</td><td>'+Object.entries(o.attributes?.[a]||{}).map(([k,v])=>esc(dimnames[k]||k)+': '+esc(v)).join(' · ')+'</td></tr>').join('')+'</tbody></table></div>';
- if(o.valid)e.innerHTML+='<p class="hint">Das ist der aktuell gefundene Zustand. Bitte prüfen, ob er deinem gewünschten Soll entspricht.</p><button onclick="useDiscovery()">Gefundene Varianten in manuelle Eingabe übernehmen</button>';
+ if(o.valid&&!o.language_error)e.innerHTML+='<p class="hint">Das ist der aktuell gefundene Zustand. Bitte prüfen, ob er deinem gewünschten Soll entspricht.</p><button onclick="useDiscovery()">Gefundene Varianten in manuelle Eingabe übernehmen</button>';
 }
 function useDiscovery(){let d=state.discovery,o=d.observation;openEditor(null,{name:o.title||d.asin,market:d.market,variants:Object.fromEntries(o.asins.map(a=>[a,{label:'',attributes:Object.fromEntries(Object.entries(o.attributes?.[a]||{}).filter(([k])=>['color','style','size'].includes(k)))}]))});toast('Gefundene Werte übernommen. Soll prüfen und speichern.');}
 let editingId=null,editingRevision=null,editorBusy=false;
