@@ -83,7 +83,7 @@ def evaluate(expected, observations):
 
 # Only variant-specific containers are read; recommendation ASINs are excluded.
 EXTRACT = r'''() => {
- const scopes = [...document.querySelectorAll('#twister, #twister_feature_div, #twister-plus-inline-twister, [id^="variation_"]')];
+ const scopes = [...document.querySelectorAll('#twister, #twister_feature_div, #twister-plus-inline-twister, [id^="variation_"], [id^="inline-twister-row-"]')];
  const ids = new Set(), attributes={}, dimensions=[];
  for(const root of document.querySelectorAll('[id^="variation_"]')) {
    const key=root.id.replace(/^variation_/, '');
@@ -94,12 +94,24 @@ EXTRACT = r'''() => {
    const label=root.querySelector('.a-form-label, label')?.textContent.trim().replace(/[:：]\s*$/, '');
    if(label){dimensions.push(label);if(val)attributes[label]=val;}
  }
+ // Modern inline twister uses dimension text spans instead of .selection.
+ for(const el of document.querySelectorAll('[id^="inline-twister-expanded-dimension-text-"], [id^="inline-twister-dimension-text-"]')) {
+   const key=el.id.replace(/^inline-twister-(?:expanded-)?dimension-text-/, '');
+   const val=el.textContent.trim();
+   if(key && val){dimensions.push(key);attributes[key]=val;}
+ }
+ for(const root of document.querySelectorAll('[id^="inline-twister-row-"], [id^="inline-twister-dim-title-"]')) {
+   const key=root.id.replace(/^inline-twister-(?:row|dim-title)-/, '');
+   const selected=root.querySelector('.selection, .a-text-bold, [aria-selected="true"] .a-button-text');
+   const val=selected?.textContent.trim();
+   if(val && val.length<250 && !attributes[key]){dimensions.push(key);attributes[key]=val;}
+ }
  for (const root of scopes) for (const el of root.querySelectorAll('[data-asin], [data-defaultasin], [data-dp-url], a[href*="/dp/"], option[value]')) {
    for (const a of ['data-asin','data-defaultasin']) {const s=el.getAttribute(a)||''; if(/^[A-Z0-9]{10}$/.test(s))ids.add(s);}
    for (const a of ['data-dp-url','href','value']) {const m=(el.getAttribute(a)||'').match(/\/(?:dp|gp\/product)\/([A-Z0-9]{10})/); if(m)ids.add(m[1]);}
  }
  return {title:document.querySelector('#productTitle')?.textContent.trim()||'', current:document.querySelector('input#ASIN')?.value||'',
-   attributes, dimensions, asins:[...ids], scripts:[...document.scripts].map(s=>s.textContent).filter(s=>/asinVariationValues|dimensionToAsinMap|variationValues/.test(s)),
+   attributes, dimensions, asins:[...ids], scripts:[...document.scripts].map(s=>s.textContent).filter(s=>/asinVariationValues|dimensionToAsinMap|variationValues|dimensionValuesDisplayData/.test(s)),
    blocked:!!document.querySelector('#captchacharacters, form[action*="validateCaptcha"], input[name="cvf_captcha_input"]'),
    labels:scopes.map(x=>x.innerText.trim()).filter(Boolean)};
 }'''
@@ -115,7 +127,7 @@ def scan_page(page, market, asin):
     except Exception: pass
     page.wait_for_timeout(1500)
     raw=page.evaluate(EXTRACT)
-    result={'url':page.url,'title':raw['title'],'labels':raw['labels']}
+    result={'url':page.url,'title':raw['title'],'labels':raw['labels'],'detected_attributes':raw.get('attributes',{}),'detected_dimensions':raw.get('dimensions',[])}
     if raw['blocked'] or not raw['title']: return {**result,'error':'Amazon-Seite blockiert oder Produkt nicht geladen.'}
     current=raw['current']
     if current != asin: return {**result,'error':f'ASIN nicht eindeutig bestätigt / Weiterleitung: {current or page.url}'}
@@ -165,24 +177,34 @@ def embedded_variants(scripts):
     ids,reliable=embedded_asins(scripts); variants={}; dimensions=set()
     for script in scripts:
         objects={}
-        for key in ('asinVariationValues','variationValues','dimensionToAsinMap'):
+        for key in ('asinVariationValues','variationValues','dimensionToAsinMap','dimensionValuesDisplayData','variationDisplayLabels'):
             for match in re.finditer(r'["\']'+key+r'["\']\s*:\s*',script):
                 try:
                     value,_=json.JSONDecoder().raw_decode(script[match.end():])
                     if isinstance(value,dict):objects[key]=value
                 except (ValueError,TypeError):pass
         values=objects.get('variationValues',{})
-        for rawkey in values: dimensions.add(dimension_key(rawkey))
+        def canonical(rawkey):
+            known=dimension_key(rawkey)
+            if known in DIMENSION_NAMES:return known
+            return dimension_key(objects.get('variationDisplayLabels',{}).get(rawkey,rawkey))
+        for rawkey in values: dimensions.add(canonical(rawkey))
         for asin,attrs in objects.get('asinVariationValues',{}).items():
             if not ASIN.fullmatch(asin) or not isinstance(attrs,dict):continue
             parsed={}
             for rawkey,index in attrs.items():
-                key=dimension_key(rawkey);dimensions.add(key)
+                key=canonical(rawkey);dimensions.add(key)
                 options=values.get(rawkey)
                 if isinstance(options,list) and str(index).isdigit() and int(index)<len(options):
                     parsed[key]=str(options[int(index)])
                 elif isinstance(index,str) and not index.isdigit():parsed[key]=index
-            if parsed:variants[asin]=parsed
+            if parsed:variants.setdefault(asin,{}).update(parsed)
+        # Explicit dimension->value dictionaries are unambiguous; arrays need a declared order.
+        for asin,attrs in objects.get('dimensionValuesDisplayData',{}).items():
+            if not ASIN.fullmatch(asin) or not isinstance(attrs,dict):continue
+            parsed={canonical(k):str(v) for k,v in attrs.items() if isinstance(v,(str,int,float)) and str(v).strip()}
+            if parsed:
+                variants.setdefault(asin,{}).update(parsed);dimensions.update(parsed)
     return {'asins':ids,'reliable':reliable,'attributes':variants,'dimensions':sorted(dimensions)}
 
 
