@@ -18,12 +18,15 @@ jobs:
       - name: Install dependencies
         working-directory: variation-monitor
         run: python -m pip install -r requirements.txt pyinstaller
+      - name: Prepare update payload
+        working-directory: variation-monitor
+        run: python package_update.py
       - name: Test comparison and imports
         working-directory: variation-monitor
         run: python -m unittest discover -v
       - name: Build Windows executable
         working-directory: variation-monitor
-        run: python -m PyInstaller --noconfirm --clean --onefile --windowed --name Amazon-Variation-Monitor --add-data "ui.html;." --add-data "templates.bundle.b64;." --collect-all playwright app.py
+        run: python -m PyInstaller --noconfirm --clean --onefile --windowed --name Amazon-Variation-Monitor --add-data "payload;payload" --hidden-import app --hidden-import selftest --collect-all playwright launcher.py
       - name: Smoke-test packaged EXE offline
         working-directory: variation-monitor
         shell: pwsh
@@ -45,7 +48,7 @@ jobs:
           Get-FileHash dist/Amazon-Variation-Monitor.exe -Algorithm SHA256 | Format-List | Out-File dist/SHA256.txt
       - uses: actions/upload-artifact@v4
         with:
-          name: Amazon-Variation-Monitor-0.3.0-Windows
+          name: Amazon-Variation-Monitor-0.4.0-Windows
           path: variation-monitor/dist/*
           retention-days: 14
       - uses: actions/upload-artifact@v4
