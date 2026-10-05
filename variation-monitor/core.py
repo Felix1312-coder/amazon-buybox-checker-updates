@@ -1,4 +1,4 @@
-import re, json, csv, io
+import re, json, csv, io, unicodedata
 from collections import defaultdict
 
 MARKETS = {'DE':'de','FR':'fr','IT':'it','ES':'es','UK':'co.uk','NL':'nl','PL':'pl','SE':'se','BE':'com.be','AE':'ae'}
@@ -16,6 +16,8 @@ def parse_import(data, filename):
     else: raise ValueError('Bitte XLSX oder CSV importieren.')
     if not rows: raise ValueError('Die Datei ist leer.')
     headers = [str(x or '').strip().lower() for x in rows[0]]
+    meaningful=[x for x in headers if x]
+    if len(meaningful)!=len(set(meaningful)):raise ValueError('Doppelte Spaltenüberschriften bitte entfernen.')
     required = ['familie','marktplatz','asin']
     if any(x not in headers for x in required): raise ValueError('Pflichtspalten: Familie, Marktplatz, ASIN. Optional: Variante.')
     groups = defaultdict(dict); owner = {}
@@ -32,7 +34,13 @@ def parse_import(data, filename):
             owner[key] = family
             label = str(d.get('variante') or '').strip()
             if asin in groups[(family,market)] and variant_label(groups[(family,market)][asin]) != label: raise ValueError(f'Zeile {n}: widersprüchliche Variantenbezeichnung.')
-            attrs={dimension_key(k):str(d[k]).strip() for k in ('farbe','stil','style','größe','groesse','size','color','muster','material') if d.get(k) is not None and str(d[k]).strip()}
+            attrs={}
+            for header,raw in d.items():
+                dim=dimension_key(header)
+                if dim in DIMENSION_NAMES and raw is not None and str(raw).strip():
+                    value=str(raw).strip()
+                    if dim in attrs and attrs[dim]!=value:raise ValueError(f'Zeile {n}: widersprüchliche Spalten für {DIMENSION_NAMES[dim]}.')
+                    attrs[dim]=value
             value={'label':label,'attributes':attrs} if attrs else label
             if asin in groups[(family,market)] and groups[(family,market)][asin] != value: raise ValueError(f'Zeile {n}: widersprüchliche Merkmale.')
             groups[(family,market)][asin] = value
@@ -66,7 +74,7 @@ def evaluate(expected, observations):
             elif normalize_value(wanted)!=normalize_value(actual[key]): changes.append({'dimension':DIMENSION_NAMES.get(key,key),'expected':wanted,'actual':actual[key]})
         if missing or extra or changes:
             deviations=True
-            details.append({'asin':asin,'type':'abweichung','missing':sorted(missing),'extra':sorted(extra),'changes':changes,'text':'Sichtbare Verknüpfung weicht vom Soll ab.'})
+            details.append({'asin':asin,'type':'abweichung','missing':sorted(missing),'extra':sorted(extra),'changes':changes,'text':'Verknüpfung oder Merkmalswert weicht vom Soll ab.'})
         elif unknown:
             uncertain=True; details.append({'asin':asin,'type':'unklar','text':'Soll-Merkmale nicht auslesbar: '+', '.join(unknown)})
         else: details.append({'asin':asin,'type':'ok','text':'Alle erwarteten Varianten gefunden.'})
@@ -79,10 +87,12 @@ EXTRACT = r'''() => {
  const ids = new Set(), attributes={}, dimensions=[];
  for(const root of document.querySelectorAll('[id^="variation_"]')) {
    const key=root.id.replace(/^variation_/, '');
-   const selected=root.querySelector('.selection, select option:checked');
+   const selected=root.querySelector('.selection') || root.querySelector('select option:checked');
    const val=selected?.textContent.trim();
    dimensions.push(key);
    if(val)attributes[key]=val;
+   const label=root.querySelector('.a-form-label, label')?.textContent.trim().replace(/[:：]\s*$/, '');
+   if(label){dimensions.push(label);if(val)attributes[label]=val;}
  }
  for (const root of scopes) for (const el of root.querySelectorAll('[data-asin], [data-defaultasin], [data-dp-url], a[href*="/dp/"], option[value]')) {
    for (const a of ['data-asin','data-defaultasin']) {const s=el.getAttribute(a)||''; if(/^[A-Z0-9]{10}$/.test(s))ids.add(s);}
@@ -119,20 +129,30 @@ def scan_page(page, market, asin):
     return {**result,'valid':valid,'asins':sorted(ids),'attributes':attributes,'dimensions':dimensions,'source':'Seitendaten + Variantenauswahl' if reliable else 'Variantenauswahl',
       **({} if valid else {'error':'Keine sichere Variantenstruktur auslesbar; mögliche Trennung bitte manuell prüfen.'})}
 
-DIMENSION_ALIASES = {
- 'color':'color','colour':'color','farbe':'color','couleur':'color','colore':'color','kleur':'color','kolor':'color','färg':'color',
- 'style':'style','stil':'style','stile':'style','estilo':'style','stijl':'style','styl':'style',
- 'size':'size','größe':'size','groesse':'size','taille':'size','taglia':'size','talla':'size','maat':'size','rozmiar':'size','storlek':'size',
- 'pattern':'pattern','muster':'pattern','material':'material','flavor':'flavor','scent':'scent','item_package_quantity':'quantity',
-}
 DIMENSION_NAMES={'color':'Farbe','style':'Stil','size':'Größe','pattern':'Muster','material':'Material','flavor':'Geschmack','scent':'Duft','quantity':'Menge'}
 
+def normalized_words(value):
+    value=unicodedata.normalize('NFKD',str(value or '').casefold())
+    value=''.join(c for c in value if not unicodedata.combining(c))
+    return ' '.join(re.sub(r'[_:\-]+',' ',value).split())
+
+_DIMENSION_GROUPS={
+ 'color':['color','colour','farbe','couleur','colore','kleur','kolor','färg','color name','colour name','farbname','nom de couleur','nom de la couleur','nome colore','nombre del color','kleurnaam','nazwa koloru','färgnamn','اللون','لون','اسم اللون'],
+ 'style':['style','stil','stile','estilo','stijl','styl','style name','stilname','nom du style','nom de style','nome stile','nome dello stile','nombre de estilo','nombre del estilo','stijlnaam','nazwa stylu','stilnamn','النمط','نمط','اسم النمط','الطراز','طراز','اسم الطراز'],
+ 'size':['size','größe','groesse','grosse','taille','taglia','talla','tamaño','dimensione','dimensioni','maat','rozmiar','storlek','size name','größenname','grossenname','nom de taille','nom de la taille','nome taglia','nombre de talla','nombre del tamaño','maatnaam','nazwa rozmiaru','storleksnamn','الحجم','حجم','المقاس','مقاس','اسم المقاس','اسم الحجم'],
+ 'pattern':['pattern','muster','pattern name'],'material':['material','material type'],
+ 'flavor':['flavor','flavour','geschmack'],'scent':['scent','duft'],'quantity':['item package quantity','quantity','menge']}
+DIMENSION_ALIASES={normalized_words(word):key for key,words in _DIMENSION_GROUPS.items() for word in words}
+
 def dimension_key(value):
-    value=str(value).strip().lower().removeprefix('variation_').removesuffix('_name')
+    value=normalized_words(value)
+    if value.startswith('variation '):value=value[len('variation '):]
     return DIMENSION_ALIASES.get(value,value)
 
 def normalize_value(value):
-    return ' '.join(str(value or '').split()).casefold()
+    value=unicodedata.normalize('NFKC',' '.join(str(value or '').split())).casefold()
+    # Formatting variants only, no guessing or translating arbitrary product labels.
+    return re.sub(r'(\d)\s+(mm|cm|m|ml|l|g|kg)\b',r'\1\2',value)
 
 def expected_attributes(value):
     return value.get('attributes',{}) if isinstance(value,dict) else {}
@@ -178,3 +198,33 @@ def parse_manual(data):
         if len(fields)>4:raise ValueError('Pro Zeile: ASIN; Farbe; Stil; Größe (Merkmale optional).')
         fields += ['']*(4-len(fields));w.writerow([name,market,*fields])
     return parse_import(out.getvalue().encode(),'manual.csv')
+
+
+def parse_family(data):
+    name=str(data.get('name') or '').strip();market=str(data.get('market') or '').upper().strip()
+    if not name:raise ValueError('Bitte einen Familiennamen eingeben.')
+    if market not in MARKETS:raise ValueError('Bitte einen gültigen Marktplatz auswählen.')
+    rows=data.get('variants')
+    if not isinstance(rows,list):raise ValueError('Bitte Varianten eingeben.')
+    variants={}
+    for i,row in enumerate(rows,1):
+        if not isinstance(row,dict):raise ValueError(f'Variante {i}: ungültige Eingabe.')
+        asin=str(row.get('asin') or '').strip().upper();attrs={}
+        entries=row.get('attributes',[])
+        if not isinstance(entries,list):raise ValueError(f'Variante {i}: ungültige Merkmale.')
+        for entry in entries:
+            if not isinstance(entry,dict):raise ValueError(f'Variante {i}: ungültiges Merkmal.')
+            raw_type=str(entry.get('type') or '').strip();value=str(entry.get('value') or '').strip()
+            if not raw_type and not value:continue
+            key=dimension_key(raw_type)
+            if key not in ('color','style','size'):raise ValueError(f'Variante {i}: bitte Farbe, Stil oder Größe auswählen.')
+            if not value:raise ValueError(f'Variante {i}: bitte einen Soll-Wert für {DIMENSION_NAMES[key]} eingeben oder das Merkmal entfernen.')
+            if key in attrs:raise ValueError(f'Variante {i}: {DIMENSION_NAMES[key]} ist doppelt vorhanden.')
+            attrs[key]=value
+        label=str(row.get('label') or '').strip()
+        if not asin and not attrs and not label:continue
+        if not ASIN.fullmatch(asin):raise ValueError(f'Variante {i}: ASIN muss aus 10 Buchstaben/Ziffern bestehen.')
+        if asin in variants:raise ValueError(f'ASIN {asin} ist doppelt vorhanden.')
+        variants[asin]={'label':label,'attributes':attrs} if attrs or label else ''
+    if not variants:raise ValueError('Bitte mindestens eine ASIN eingeben.')
+    return {'name':name,'market':market,'variants':variants}
