@@ -5,7 +5,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse, parse_qs
-from core import parse_import, parse_manual, evaluate, scan_page, ASIN, MARKETS, parse_family, dimension_key, market_browser_options, parse_snapshot_input, collect_snapshot, SnapshotCancelled, snapshot_workbook, snapshot_comparison, snapshot_structure, snapshot_baseline
+from core import parse_import, parse_manual, evaluate, scan_page, ASIN, MARKETS, parse_family, dimension_key, market_browser_options, parse_snapshot_input, collect_snapshot, SnapshotCancelled, snapshot_workbook, snapshot_comparison, snapshot_structure, snapshot_baseline, accepted_deviation_groups
 
 ROOT=Path(__file__).resolve().parent
 DATA=Path(os.environ.get('LOCALAPPDATA', str(Path.home()))) / 'AmazonVariationMonitor'
@@ -207,6 +207,8 @@ class Handler(BaseHTTPRequestHandler):
                 groups=parse_import(base64.b64decode(d['data']),d['filename'])
                 save_groups(groups)
                 return self.send({'message':f'{len(groups)} Familien/Marktplätze importiert.'})
+            if path=='/api/accept-deviation':
+                return self.send(accept_deviation(d))
             if path=='/api/family':
                 family=parse_family(d)
                 ids=save_groups([family],edit_id=d.get('id'),revision=d.get('revision'))
@@ -239,6 +241,26 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send({'message':'Familie entfernt. Historie bleibt erhalten.'})
             raise ValueError('Unbekannte Aktion.')
         except Exception as e: self.send({'error':str(e)},code=400)
+
+def accept_deviation(d):
+    with LOCK:
+        if PROGRESS['running']:raise ValueError('Bitte die laufende Prüfung zuerst beenden.')
+        stored=families();family=next((f for f in stored if f['id']==d.get('id')),None)
+        if not family:raise ValueError('Soll-Gruppe nicht gefunden.')
+        with db() as c:row=c.execute('SELECT * FROM checks WHERE family_id=? ORDER BY id DESC LIMIT 1',(family['id'],)).fetchone()
+        if not row:raise ValueError('Noch kein Prüfergebnis vorhanden.')
+        check=dict(row);result=json.loads(check['result'])
+        if check['market']!=family['market'] or json.loads(check['expected'])!=family['variants']:raise ValueError('Der Soll-Zustand wurde inzwischen geändert. Bitte zuerst erneut prüfen.')
+        if result['status']!='Abweichung' or result.get('partial'):raise ValueError('Nur vollständig gelesene Abweichungen können übernommen werden. Bitte erneut prüfen oder Soll manuell bearbeiten.')
+        plan=accepted_deviation_groups(family,json.loads(check['observations']),stored)
+        token=hashlib.sha256(json.dumps([check,stored,plan],sort_keys=True).encode()).hexdigest()
+        if not d.get('apply'):return {**plan,'before':family,'at':check['at'],'token':token}
+        if token!=d.get('token'):raise ValueError('Prüfergebnis oder Soll wurde geändert. Bitte Vorschau erneut öffnen.')
+        with db() as c:
+            for i,g in enumerate(plan['groups']):
+                if i==0:c.execute('UPDATE families SET name=?,market=?,variants=? WHERE id=?',(g['name'],g['market'],json.dumps(g['variants']),family['id']))
+                else:c.execute('INSERT INTO families VALUES(?,?,?,?)',(uuid.uuid4().hex,g['name'],g['market'],json.dumps(g['variants'])))
+        return {'message':'Als neuen Soll gespeichert. Die akzeptierte Abweichung bleibt im Verlauf; künftige Prüfungen verwenden die neue Vorgabe.'}
 
 def save_groups(groups,edit_id=None,revision=None):
     with LOCK:

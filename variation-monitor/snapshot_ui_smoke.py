@@ -103,7 +103,7 @@ def main():
    assert 'Ist ·' in page.locator('#monitorTable').inner_text()
    family=app.families()[0]
    result={'status':'Abweichung','partial':False,'details':[{'asin':A,'type':'abweichung','missing':[B],'extra':[],'changes':[],'text':'Verknüpfung fehlt.'}]}
-   with app.db() as c:c.execute('INSERT INTO checks(family_id,name,market,at,result,observations,expected) VALUES(?,?,?,?,?,?,?)',(family['id'],family['name'],family['market'],'2026-10-08T15:00:00+02:00',json.dumps(result),'{}',json.dumps(family['variants'])))
+   with app.db() as c:c.execute('INSERT INTO checks(family_id,name,market,at,result,observations,expected) VALUES(?,?,?,?,?,?,?)',(family['id'],family['name'],family['market'],'2026-10-08T15:00:00+02:00',json.dumps(result),json.dumps({a:{'valid':True,'asins':[a],'title':'Product '+a,'attributes':{a:{}}} for a in family['variants']}),json.dumps(family['variants'])))
    page.locator('#nav-deviations').click()
    page.wait_for_function("document.querySelector('#deviationTable').innerText.includes('So soll es sein')")
    assert B in page.locator('#deviationTable').inner_text()
@@ -117,6 +117,19 @@ def main():
    page.wait_for_function("document.querySelector('#progress').innerText.includes('Stop angefordert')")
    assert app.CHECK_STOP.is_set()
    app.PROGRESS['running']=False;app.CHECK_STOP.clear();app.SNAPSHOT_STOP.clear()
+   page.locator('#nav-deviations').click()
+   accept=page.get_by_role('button',name='Als neuen Soll übernehmen',exact=True)
+   page.wait_for_function("!document.querySelector('#stopCheck').offsetParent")
+   accept.click()
+   page.locator('#acceptDeviationApply').wait_for(state='visible')
+   assert 'Neue Soll-Vorgabe' in page.locator('#detailbody').inner_text()
+   assert '2 getrennte' in page.locator('#detailbody').inner_text()
+   page.locator('#acceptDeviationApply').click()
+   page.wait_for_function("document.querySelector('#deviationTable').innerText.includes('Keine festgestellten Abweichungen')")
+   assert len(app.families())==2
+   assert all(len(f['variants'])==1 for f in app.families())
+   with app.db() as c:assert c.execute('SELECT COUNT(*) FROM checks').fetchone()[0]==1
+
 
    browser.close()
   (qa/'snapshot-qa.json').write_text(json.dumps({'ok':True,'checks':['CSV upload and preview','Selected IT + DE Cartesian product','No selection disables start','Live progress and persisted results','Child ASIN style/color/size display','Filter does not limit export','One XLSX per market','ZIP contains both markets','Deduplicated family export','No Soll modifications']},indent=2))

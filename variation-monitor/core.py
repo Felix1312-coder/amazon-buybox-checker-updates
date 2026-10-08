@@ -362,6 +362,43 @@ def collect_snapshot(seed,market,read,cancelled=lambda:False,max_members=500):
     return {'status':'Teilweise' if notes or incomplete else 'Gelesen','note':' '.join(dict.fromkeys(notes)),'asins':sorted(known),'variants':variants}
 
 
+def accepted_deviation_groups(family,observations,existing):
+    """Build disjoint observed groups, retaining each old member's monitoring coverage."""
+    old=family['variants'];sets={};notes=[]
+    for asin in old:
+        o=observations.get(asin,{})
+        if not o.get('valid') or o.get('error'):
+            raise ValueError(f'{asin}: Ergebnis unvollständig. Bitte erneut prüfen oder Soll manuell bearbeiten.')
+        members=tuple(sorted(set(o.get('asins') or [])))
+        if asin not in members or any(not ASIN.fullmatch(a) for a in members):raise ValueError('Die gefundenen ASIN-Verknüpfungen sind nicht eindeutig.')
+        sets[members]=True
+    keys=sorted(sets)
+    for i,members in enumerate(keys):
+        if any(set(members)&set(other) for other in keys[i+1:]):raise ValueError('Widersprüchliche / überlappende Gruppen. Bitte erneut prüfen oder Soll manuell bearbeiten.')
+    for f in existing:
+        if f['id']!=family['id'] and f['market']==family['market'] and any(set(m)&set(f['variants']) for m in keys):
+            raise ValueError('Mindestens eine ASIN gehört bereits zur Soll-Gruppe '+f['name']+'. Bitte die betroffenen Gruppen unter Soll bearbeiten abstimmen.')
+    used={f['name'] for f in existing if f['id']!=family['id'] and f['market']==family['market']};groups=[]
+    for number,members in enumerate(keys,1):
+        name=family['name'] if number==1 else family['name']+f' · Teil {number}'
+        base=name;suffix=2
+        while name in used:name=base+f' ({suffix})';suffix+=1
+        used.add(name);variants={}
+        for asin in members:
+            o=observations.get(asin,{})
+            prior=old.get(asin,{});wanted=expected_attributes(prior)
+            attrs={}
+            if wanted:
+                actual=o.get('attributes',{}).get(asin,{})
+                if o.get('language_error') or any(k not in actual for k in wanted):raise ValueError(f'{asin}: Soll-Merkmale nicht sicher ausgelesen. Bitte erneut prüfen.')
+                attrs={k:actual[k] for k in wanted}
+            label=o.get('title') or (prior.get('label','') if isinstance(prior,dict) else prior) or ''
+            variants[asin]={'label':label,'attributes':attrs}
+            if asin not in observations:notes.append(asin+': als verknüpft gefunden, noch nicht einzeln geprüft. Wird bei der nächsten Soll-Prüfung mitgeprüft.')
+        groups.append({'name':name,'market':family['market'],'variants':variants})
+    return {'groups':groups,'notes':notes}
+
+
 def snapshot_baseline(items,existing,include_attributes=False):
     groups={};skipped=[];evidence={}
     for item in items:
