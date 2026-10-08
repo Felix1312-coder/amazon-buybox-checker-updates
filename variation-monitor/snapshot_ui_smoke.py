@@ -8,8 +8,10 @@ def main():
  from openpyxl import load_workbook
  import app
  qa=Path('qa');qa.mkdir(exist_ok=True)
+ seen_pages=set()
  original=app.snapshot_process
  def scanner(page,market,asin):
+  seen_pages.add(id(page))
   page.set_content('<html lang="'+('it-IT' if market=='IT' else 'de-DE')+'"><body>Offline fixture</body></html>')
   return {'valid':True,'title':'Testprodukt '+asin,'asins':[A,B],'attributes':{asin:{'style':'Classico' if market=='IT' else 'Klassisch','color':'Giallo' if market=='IT' else 'Gelb','size':'50 cm'}},'url':f'https://www.amazon.{"it" if market=="IT" else "de"}/dp/{asin}'}
  app.snapshot_process=lambda ident,page_for:original(ident,page_for,scanner)
@@ -19,9 +21,18 @@ def main():
  try:
   with sync_playwright() as p:
    browser=p.chromium.launch(channel='msedge',headless=True)
+   shared=app.SharedMarketPage(browser);requests=[]
+   shared.context.route('**/*',lambda route:(requests.append(route.request.headers.get('accept-language')),route.fulfill(status=200,content_type='text/html',body='<html><body>Language fixture</body></html>')))
+   for market,locale in [('IT','it-IT'),('DE','de-DE'),('IE','en-IE')]:
+    tab=shared(market);tab.goto(app.core_url(market,A) if hasattr(app,'core_url') else 'https://www.amazon.'+app.MARKETS[market]+'/dp/'+A)
+    assert tab.evaluate('navigator.language')==locale
+    assert requests[-1].startswith(locale)
+    assert len(browser.contexts)==1 and len(shared.context.pages)==1
+   shared.context.close()
    page=browser.new_page(viewport={'width':1500,'height':1100},accept_downloads=True)
    page.goto(f'http://127.0.0.1:{server.server_port}')
    page.locator('#nav-snapshots').click()
+   page.locator('#snapshotInputPanel > summary').click()
    page.locator('#snapFile').set_input_files({'name':'Liste.csv','mimeType':'text/csv','buffer':f'ASIN;Name\n{A};Test Eins\n{B};Test Zwei'.encode()})
    page.wait_for_function("document.querySelector('#snapPreview').innerText.includes('2 eindeutige ASINs')")
    page.get_by_role('button',name='Alle abwählen',exact=True).click()
@@ -31,6 +42,7 @@ def main():
    page.locator('#snapStart').click()
    page.wait_for_function("document.querySelector('#snapJobStatus').innerText.includes('Abgeschlossen')",timeout=90000)
    assert '4 / 4' in page.locator('#snapJobStatus').inner_text()
+   assert len(seen_pages)==1
    page.locator('#snapFilterMarket').select_option('IT')
    page.wait_for_function("document.querySelectorAll('#snapTable tbody tr').length===2")
    page.get_by_role('button',name='Varianten ansehen').first.click()
@@ -60,7 +72,8 @@ def main():
    page.locator('#snapIEFile').set_input_files({'name':'IE.csv','mimeType':'text/csv','buffer':f'ASIN;Name\n{B};IE Product'.encode()})
    page.wait_for_function("document.querySelector('#snapIEPreview').innerText.includes('1 ASINs')")
    assert '2 eindeutige ASINs' in page.locator('#snapPreview').inner_text()
-   page.get_by_role('button',name='UK-/IE-Listen zu dieser Aufnahme hinzufügen',exact=True).click()
+   page.get_by_text('UK-/IE-Listen zu dieser Aufnahme ergänzen',exact=True).click()
+   page.get_by_role('button',name='Hochgeladene UK-/IE-Listen hinzufügen',exact=True).click()
    page.wait_for_function("document.querySelector('#snapJobStatus').innerText.includes('4 / 6')")
    job=app.snapshot_jobs()[0];_,items=app.snapshot_data(job['id'])
    assert len(items)==6 and sum(i['status']=='Gelesen' for i in items)==4
@@ -86,6 +99,25 @@ def main():
    assert len(app.families())==1 and app.families()[0]['market']=='DE'
    assert app.config()['enabled'] and app.config()['time']=='10:15'
    assert len(app.snapshot_data(job['id'])[1])==6
+   assert page.locator('#monitor').is_visible()
+   assert 'Ist ·' in page.locator('#monitorTable').inner_text()
+   family=app.families()[0]
+   result={'status':'Abweichung','partial':False,'details':[{'asin':A,'type':'abweichung','missing':[B],'extra':[],'changes':[],'text':'Verknüpfung fehlt.'}]}
+   with app.db() as c:c.execute('INSERT INTO checks(family_id,name,market,at,result,observations,expected) VALUES(?,?,?,?,?,?,?)',(family['id'],family['name'],family['market'],'2026-10-08T15:00:00+02:00',json.dumps(result),'{}',json.dumps(family['variants'])))
+   page.locator('#nav-deviations').click()
+   page.wait_for_function("document.querySelector('#deviationTable').innerText.includes('So soll es sein')")
+   assert B in page.locator('#deviationTable').inner_text()
+   assert 'Fehlende Verknüpfungen' in page.locator('#deviationTable').inner_text()
+   page.screenshot(path=str(qa/'snapshot-overview.png'),full_page=True)
+   page.locator('#nav-families').click()
+   assert page.locator('#familytable').is_visible()
+   app.PROGRESS.update(running=True,text='Stop fixture');app.CHECK_STOP.clear()
+   page.locator('#stopCheck').wait_for(state='visible')
+   page.locator('#stopCheck').click()
+   page.wait_for_function("document.querySelector('#progress').innerText.includes('Stop angefordert')")
+   assert app.CHECK_STOP.is_set()
+   app.PROGRESS['running']=False;app.CHECK_STOP.clear();app.SNAPSHOT_STOP.clear()
+
    browser.close()
   (qa/'snapshot-qa.json').write_text(json.dumps({'ok':True,'checks':['CSV upload and preview','Selected IT + DE Cartesian product','No selection disables start','Live progress and persisted results','Child ASIN style/color/size display','Filter does not limit export','One XLSX per market','ZIP contains both markets','Deduplicated family export','No Soll modifications']},indent=2))
  finally:server.shutdown()

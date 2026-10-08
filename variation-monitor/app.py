@@ -12,6 +12,7 @@ DATA=Path(os.environ.get('LOCALAPPDATA', str(Path.home()))) / 'AmazonVariationMo
 DATA.mkdir(parents=True,exist_ok=True)
 LOCK=threading.Lock(); PROGRESS={'running':False,'text':'Bereit'}; TOKEN=uuid.uuid4().hex
 DISCOVERY={}
+CHECK_STOP=threading.Event()
 SNAPSHOT_ACTIVE={"id":None}; SNAPSHOT_STOP=threading.Event()
 
 @contextmanager
@@ -40,6 +41,18 @@ def with_revision(f):
 def families():
     with db() as c: return [with_revision({**dict(r),'variants':json.loads(r['variants'])}) for r in c.execute('SELECT * FROM families ORDER BY name,market')]
 
+class SharedMarketPage:
+    """One context and one tab per run, with market-specific language on navigation."""
+    def __init__(self,browser):
+        self.context=browser.new_context(viewport={'width':1360,'height':900})
+        from core import MARKET_LOCALES
+        mapping={'www.amazon.'+MARKETS[m]:locale for m,locale in MARKET_LOCALES.items()}
+        self.context.add_init_script("const marketLocales="+json.dumps(mapping)+"; const marketLocale=marketLocales[location.hostname]; if(marketLocale){Object.defineProperty(navigator,'language',{get:()=>marketLocale});Object.defineProperty(navigator,'languages',{get:()=>[marketLocale,marketLocale.split('-')[0]]});}")
+        self.page=self.context.new_page()
+    def __call__(self,market):
+        self.context.set_extra_http_headers(market_browser_options(market)['extra_http_headers'])
+        return self.page
+
 def run(items, visible):
     try:
         from playwright.sync_api import sync_playwright
@@ -51,20 +64,22 @@ def run(items, visible):
                     browser=p.chromium.launch(channel=channel,headless=not visible); break
                 except Exception: pass
             if not browser: raise RuntimeError('Kein Browser verfügbar. Bitte Microsoft Edge oder Google Chrome installieren.')
-            pages={}
+            page_for=SharedMarketPage(browser)
             try:
                 for f in items:
-                    if f['market'] not in pages:
-                        pages[f['market']]=browser.new_context(**market_browser_options(f['market'])).new_page()
-                    page=pages[f['market']]
+                    if CHECK_STOP.is_set():break
+                    page=page_for(f['market'])
                     observations={}
                     for asin in f['variants']:
+                        if CHECK_STOP.is_set():break
                         PROGRESS['text']=f'{done+1}/{total} · {f["name"]} · {f["market"]} · {asin}'
                         try:
                             o=scan_page(page,f['market'],asin)
+                            if CHECK_STOP.is_set():break
                             provisional=evaluate(f['variants'],{asin:o})
-                            if o.get('error') or o.get('language_error') or any(d['type']=='abweichung' for d in provisional['details']):
+                            if not CHECK_STOP.is_set() and (o.get('error') or o.get('language_error') or any(d['type']=='abweichung' for d in provisional['details'])):
                                 page.wait_for_timeout(2000)
+                                if CHECK_STOP.is_set():break
                                 second=scan_page(page,f['market'],asin)
                                 if o.get('valid') and second.get('valid') and (o.get('asins'),o.get('attributes')) != (second.get('asins'),second.get('attributes')):
                                     second={**second,'valid':False,'error':'Widersprüchliche Ergebnisse bei Wiederholungsprüfung.'}
@@ -72,12 +87,13 @@ def run(items, visible):
                             observations[asin]=o
                         except Exception as e: observations[asin]={'error':str(e)[:500]}
                         done+=1
+                    if CHECK_STOP.is_set():break
                     result=evaluate(f['variants'],observations)
                     with db() as c:
                         c.execute('INSERT INTO checks(family_id,name,market,at,result,observations,expected) VALUES(?,?,?,?,?,?,?)',
                           (f['id'],f['name'],f['market'],datetime.now().astimezone().isoformat(timespec='seconds'),json.dumps(result),json.dumps(observations),json.dumps(f['variants'])))
             finally: browser.close()
-        PROGRESS['text']=f'Abgeschlossen · {done} ASINs geprüft'
+        PROGRESS['text']=(f'Gestoppt · {done} ASINs bearbeitet. Fertige Gruppen bleiben gespeichert; die unterbrochene Gruppe wurde nicht neu bewertet.' if CHECK_STOP.is_set() else f'Abgeschlossen · {done} ASINs geprüft')
     except Exception as e: PROGRESS['text']='Prüfung fehlgeschlagen: '+str(e)
     finally:
         with LOCK: PROGRESS['running']=False
@@ -88,6 +104,7 @@ def start(ids=None, scheduled=False):
         items=families()
         if ids is not None: items=[f for f in items if f['id'] in ids]
         if not items: raise ValueError('Bitte zuerst Variantenfamilien importieren.')
+        CHECK_STOP.clear()
         cfg=config(); PROGRESS.update(running=True,text='Browser wird gestartet …')
         if scheduled:
             cfg['last_day']=datetime.now().date().isoformat()
@@ -137,7 +154,7 @@ class Handler(BaseHTTPRequestHandler):
             with db() as c:
                 history=[dict(r) for r in c.execute('SELECT id,family_id,name,market,at,result FROM checks ORDER BY id DESC LIMIT 500')]
                 count=c.execute('SELECT COUNT(*) FROM checks').fetchone()[0]
-                latest={r['family_id']:json.loads(r['result']) for r in c.execute('SELECT c.family_id,c.result FROM checks c JOIN families f ON f.id=c.family_id WHERE c.id IN (SELECT MAX(id) FROM checks GROUP BY family_id) AND c.expected=f.variants AND c.market=f.market')}
+                latest={r['family_id']:{**json.loads(r['result']),'at':r['at']} for r in c.execute('SELECT c.family_id,c.result,c.at FROM checks c JOIN families f ON f.id=c.family_id WHERE c.id IN (SELECT MAX(id) FROM checks GROUP BY family_id) AND c.expected=f.variants AND c.market=f.market')}
             return self.send({'families':families(),'history':history,'count':count,'latest':latest,'config':config(),'progress':PROGRESS,'discovery':DISCOVERY,'updates':dict(updater.STATE),'version':updater.current_version()})
         if path=='/api/export':
             with db() as c:
@@ -202,6 +219,12 @@ class Handler(BaseHTTPRequestHandler):
             if path=='/api/discover':
                 start_discovery(d)
                 return self.send({'message':'ASIN-Test gestartet.'})
+            if path=='/api/stop':
+                with LOCK:
+                    if not PROGRESS['running']:raise ValueError('Es läuft keine Prüfung.')
+                    CHECK_STOP.set();SNAPSHOT_STOP.set()
+                    PROGRESS['text']='Stop angefordert – aktuelle Seitenabfrage wird noch beendet.'
+                return self.send({'message':'Stop angefordert. Fertige Ergebnisse bleiben gespeichert.'})
             if path=='/api/run': start(d.get('ids')); return self.send({'message':'Prüfung gestartet.'})
             if path=='/api/config':
                 datetime.strptime(d['time'],'%H:%M')
@@ -250,6 +273,7 @@ def start_discovery(d):
     if not ASIN.fullmatch(asin) or market not in MARKETS: raise ValueError('Bitte gültige ASIN und Marktplatz eingeben.')
     with LOCK:
         if PROGRESS['running']:raise ValueError('Es läuft bereits eine Prüfung.')
+        CHECK_STOP.clear()
         PROGRESS.update(running=True,text=f'ASIN-Test · {market} · {asin}')
         DISCOVERY.clear()
         threading.Thread(target=discover,args=(asin,market,config()['visible']),daemon=True).start()
@@ -266,7 +290,11 @@ def discover(asin,market,visible):
             try:
                 page=browser.new_context(**market_browser_options(market)).new_page()
                 o=scan_page(page,market,asin)
+                if CHECK_STOP.is_set():
+                    PROGRESS['text']='ASIN-Test gestoppt.';return
                 if o.get('error') or o.get('language_error'):o=scan_page(page,market,asin)
+                if CHECK_STOP.is_set():
+                    PROGRESS['text']='ASIN-Test gestoppt.';return
                 DISCOVERY.update(asin=asin,market=market,observation=o)
                 PROGRESS['text']='ASIN-Test fertig. Ergebnis unter „Manuell testen“.'
             finally:browser.close()
@@ -421,10 +449,7 @@ def run_snapshot(ident,visible):
                 try:browser=p.chromium.launch(channel=channel,headless=not visible);break
                 except Exception:pass
             if not browser:raise RuntimeError('Bitte Microsoft Edge oder Google Chrome installieren.')
-            pages={}
-            def page_for(market):
-                if market not in pages:pages[market]=browser.new_context(**market_browser_options(market)).new_page()
-                return pages[market]
+            page_for=SharedMarketPage(browser)
             try:complete=snapshot_process(ident,page_for)
             finally:browser.close()
         final='Abgeschlossen' if complete else 'Gestoppt'
