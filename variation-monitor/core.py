@@ -280,3 +280,159 @@ def parse_family(data):
         variants[asin]={'label':label,'attributes':attrs} if attrs or label else ''
     if not variants:raise ValueError('Bitte mindestens eine ASIN eingeben.')
     return {'name':name,'market':market,'variants':variants}
+
+
+# Standalone, read-only bulk snapshots. These never change monitored Soll families.
+def parse_snapshot_input(data, filename):
+    if filename.lower().endswith('.xlsx'):
+        from openpyxl import load_workbook
+        wb=load_workbook(io.BytesIO(data),read_only=True,data_only=True)
+        try:
+            sheet=wb.active
+            if sheet.max_row>10001 or sheet.max_column>200:raise ValueError('Bitte eine Liste mit höchstens 10.000 Zeilen und 200 Spalten verwenden.')
+            rows=list(sheet.values)
+        finally:wb.close()
+    elif filename.lower().endswith('.csv'):
+        text=data.decode('utf-8-sig')
+        try: dialect=csv.Sniffer().sniff(text[:4096],delimiters=';,\t')
+        except csv.Error: dialect=csv.excel
+        rows=list(csv.reader(io.StringIO(text),dialect))
+    else:raise ValueError('Bitte eine XLSX- oder CSV-Datei hochladen.')
+    rows=[r for r in rows if any(str(v or '').strip() for v in r)]
+    if not rows:raise ValueError('Die Liste ist leer.')
+    headers=[normalized_words(v) for v in rows[0]]
+    asin_cols=[i for i,v in enumerate(headers) if v in ('asin','child asin','childasin')]
+    if len(asin_cols)>1:raise ValueError('Mehrere ASIN-Spalten gefunden. Bitte nur eine verwenden.')
+    if asin_cols:
+        idx=asin_cols[0];body=rows[1:];offset=2
+        names=[i for i,v in enumerate(headers) if v in ('name','produktname','produkt','title','titel','bezeichnung')]
+        nameidx=names[0] if names else None
+    elif len(rows[0])==1 and ASIN.fullmatch(str(rows[0][0]).strip().upper()):
+        idx=0;nameidx=None;body=rows;offset=1
+    else:raise ValueError('Eine Spalte mit der Überschrift ASIN ist erforderlich. Name ist optional.')
+    found={};duplicates=0;errors=[]
+    for n,row in enumerate(body,offset):
+        value=str(row[idx] or '').strip().upper() if idx<len(row) else ''
+        if not ASIN.fullmatch(value):errors.append(str(n));continue
+        name=str(row[nameidx] or '').strip()[:500] if nameidx is not None and nameidx<len(row) else ''
+        if value in found:
+            duplicates+=1
+            if not found[value]['name']:found[value]['name']=name
+        else:found[value]={'asin':value,'name':name}
+    if errors:raise ValueError('Ungültige oder leere ASIN in Zeile '+', '.join(errors[:15])+(' …' if len(errors)>15 else '')+'. Es wurde nichts gestartet.')
+    if not found:raise ValueError('Keine ASINs gefunden.')
+    if len(found)>2000:raise ValueError('Bitte maximal 2.000 unterschiedliche ASINs pro Aufnahme verwenden.')
+    return {'seeds':list(found.values()),'duplicates':duplicates}
+
+class SnapshotCancelled(Exception):pass
+
+def collect_snapshot(seed,market,read,cancelled=lambda:False,max_members=500):
+    """Expand only explicit variant links; retain page-local evidence and failures."""
+    queue=[seed];seen=set();variants=[];known=set();notes=[];seed_valid=False
+    while queue:
+        if cancelled():raise SnapshotCancelled()
+        asin=queue.pop(0)
+        if asin in seen:continue
+        if len(seen)>=max_members:
+            notes.append(f'Grenze von {max_members} geöffneten Varianten erreicht. Aufnahme ist unvollständig.');break
+        seen.add(asin)
+        o=read(asin)
+        if cancelled():raise SnapshotCancelled()
+        if asin==seed:seed_valid=bool(o.get('valid') and not o.get('error'))
+        issue=o.get('error') or ('' if o.get('valid') else 'Keine sichere Variantenstruktur auslesbar.')
+        language=o.get('language_error','')
+        attributes=dict(o.get('attributes',{}).get(asin,{})) if not issue and not language else {}
+        status='Unklar' if issue or language else ('Gelesen' if attributes else 'Teilweise')
+        note=issue or language or ('' if attributes else 'Merkmalswerte nicht auslesbar.')
+        variants.append({'asin':asin,'title':o.get('title',''),'attributes':attributes,'status':status,'note':note,'at':o.get('at',''),'url':o.get('url') or market_product_url(market,asin)})
+        if not issue:
+            linked={a for a in o.get('asins',[]) if isinstance(a,str) and ASIN.fullmatch(a)}
+            known.update(linked)
+            if seed not in linked:notes.append(f'{asin}: Ausgangs-ASIN nicht in der dortigen Variantenauswahl gefunden.')
+            for child in sorted(linked):
+                if child not in seen and child not in queue:queue.append(child)
+    if not seed_valid:
+        return {'status':'Unklar','note':variants[0]['note'] if variants else 'Keine Daten.','asins':[],'variants':variants}
+    known.add(seed)
+    pending=known-seen
+    for asin in sorted(pending):
+        variants.append({'asin':asin,'title':'','attributes':{},'status':'Unklar','note':'Gefunden, wegen der Begrenzung noch nicht geöffnet.','at':'','url':market_product_url(market,asin)})
+    incomplete=any(v['status']!='Gelesen' for v in variants)
+    if incomplete:notes.append('Mindestens eine Variante oder ihr Merkmalswert konnte nicht vollständig gelesen werden.')
+    return {'status':'Teilweise' if notes or incomplete else 'Gelesen','note':' '.join(dict.fromkeys(notes)),'asins':sorted(known),'variants':variants}
+
+
+def snapshot_workbook(job,items,market):
+    """Runtime Excel export using the app's already bundled Excel dependency."""
+    from openpyxl import Workbook
+    from openpyxl.styles import Font,PatternFill,Alignment
+    from openpyxl.worksheet.datavalidation import DataValidation
+    from datetime import datetime
+    wb=Workbook();summary=wb.active;summary.title='Übersicht';sheet=wb.create_sheet('Varianten')
+    def safe_append(ws,values):
+        ws.append(values)
+        for c in ws[ws.max_row]:
+            if isinstance(c.value,str):c.data_type='s'  # Never interpret Amazon/user text as Excel formulas.
+    def date(value):
+        try:return datetime.fromisoformat(value).replace(tzinfo=None)
+        except (ValueError,TypeError):return None
+    safe_append(summary,['Ist-Aufnahme',job['name'],'Marktplatz',market])
+    safe_append(summary,['Stand des Laufs',job['status'],'Erstellt',job['created']])
+    safe_append(summary,['Momentaufnahme der auslesbaren Amazon-Varianten. „Gelesen“ bedeutet nicht fachlich korrekt. Unvollständige Seiten und offene Prüfungen sind gekennzeichnet.'])
+    safe_append(summary,['Zeiten entsprechen der lokalen Rechnerzeit. Kolleg:innen bewerten in den beiden letzten Spalten des Blatts Varianten.'])
+    summary_headers=['Eingabe-ASIN','Name aus Liste','Marktplatz','Lesestatus','Gefundene ASINs','Hinweis','Ausgelesen am','Amazon-Link']
+    safe_append(summary,summary_headers)
+    headers=['Gruppe','Eingabe-ASINs','Marktplatz','ASIN','Produkttitel','Farbe','Stil','Größe','Weitere Merkmale','Lesestatus','Hinweis','Ausgelesen am','Amazon-Link','Bewertung','Kommentar']
+    safe_append(sheet,headers)
+    groups={}
+    for item in items:
+        if item['market']!=market:continue
+        r=json.loads(item['result']) if isinstance(item.get('result'),str) and item['result'] else item.get('result') or {}
+        safe_append(summary,[item['asin'],item['name'],market,item['status'],len(r['asins']) if 'asins' in r and r.get('status')!='Unklar' else None,item.get('note',''),date(item.get('at')),market_product_url(market,item['asin'])])
+        if not r:continue
+        # Deduplicate identical discoveries, never merge different or overlapping sets.
+        key=tuple(r.get('asins') or [item['asin']])
+        group=groups.setdefault(key,{'seeds':[],'variants':{},'notes':[]})
+        group['seeds'].append(item['asin'])
+        if r.get('note'):group['notes'].append(r['note'])
+        for v in r.get('variants',[]):
+            old=group['variants'].get(v['asin'])
+            if old and old['attributes']!=v['attributes']:
+                group['notes'].append('Unterschiedliche Merkmalswerte während dieses Laufs beobachtet; letzter Stand dargestellt.')
+            group['variants'][v['asin']]=v
+    for number,group in enumerate(groups.values(),1):
+        for asin,v in sorted(group['variants'].items()):
+            attrs=v['attributes'];note=' '.join(dict.fromkeys([v.get('note',''),*group['notes']])).strip()
+            safe_append(sheet,[f'{market}-{number:03}',', '.join(group['seeds']),market,asin,v['title'],attrs.get('color',''),attrs.get('style',''),attrs.get('size',''),'; '.join(DIMENSION_NAMES.get(k,k)+': '+str(value) for k,value in attrs.items() if k not in ('color','style','size')),v['status'],note,date(v.get('at')),v['url'],'Offen',''])
+    validation=DataValidation(type='list',formula1='"Offen,Passt,Bitte ändern,Unklar"');sheet.add_data_validation(validation)
+    if sheet.max_row>=2:validation.add(f'N2:N{sheet.max_row}')
+    for ws,head,widths in [(summary,5,[18,35,14,18,20,70,23,58]),(sheet,1,[14,32,13,18,48,22,32,22,40,18,65,23,58,20,45])]:
+        ws.freeze_panes=f'A{head+1}';ws.auto_filter.ref=f'A{head}:{ws.cell(ws.max_row,len(widths)).coordinate}'
+        ws.sheet_view.zoomScale=90
+        for col,width in enumerate(widths,1):ws.column_dimensions[ws.cell(1,col).column_letter].width=width
+        for c in ws[head]:c.fill=PatternFill('solid',fgColor='163C33');c.font=Font(color='FFFFFF',bold=True);c.alignment=Alignment(wrap_text=True,vertical='center')
+        ws.row_dimensions[head].height=30
+        for row in ws.iter_rows(min_row=head+1):
+            for c in row:
+                c.alignment=Alignment(vertical='top',wrap_text=True)
+                if isinstance(c.value,datetime):c.number_format='yyyy-mm-dd hh:mm:ss'
+                if c.row%2==0:c.fill=PatternFill('solid',fgColor='F0F5F1')
+            import math
+            lines=max(sum(max(1,math.ceil(len(line)/max(8,widths[c.column-1]-2))) for line in str(c.value or '').split('\n')) for c in row)
+            ws.row_dimensions[row[0].row].height=min(409,max(32,lines*15+8))
+        urlcol=8 if ws==summary else 13
+        for row in range(head+1,ws.max_row+1):
+            cell=ws.cell(row,urlcol)
+            if isinstance(cell.value,str) and cell.value.startswith('https://www.amazon.'):
+                cell.hyperlink=cell.value;cell.font=Font(color='28694B',underline='single')
+        ws.sheet_properties.pageSetUpPr.fitToPage=True
+        ws.page_setup.orientation='landscape';ws.page_setup.paperSize=ws.PAPERSIZE_A3;ws.page_setup.fitToWidth=1;ws.page_setup.fitToHeight=0
+        ws.print_title_rows=f'1:{head}'
+    summary.merge_cells('A3:H3');summary.merge_cells('A4:H4')
+    summary['A3'].alignment=summary['A4'].alignment=Alignment(wrap_text=True,vertical='center')
+    summary.row_dimensions[3].height=32;summary.row_dimensions[4].height=30
+    summary['A1'].font=Font(size=16,bold=True,color='163C33')
+    if sheet.max_row>=2:
+        for row in sheet.iter_rows(min_row=2,min_col=14,max_col=15):
+            for c in row:c.fill=PatternFill('solid',fgColor='FFF2CC')
+    result=io.BytesIO();wb.save(result);wb.close();return result.getvalue()

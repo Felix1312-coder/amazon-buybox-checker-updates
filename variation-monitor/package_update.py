@@ -2,7 +2,7 @@
 import hashlib, json, shutil, zipfile
 from pathlib import Path
 import runtime
-VERSION='0.4.1'
+VERSION='0.5.0'
 ROOT=Path(__file__).parent
 OUT=ROOT/'release';OUT.mkdir(exist_ok=True)
 meta={'app_id':runtime.APP_ID,'version':VERSION,'launcher_protocol':runtime.PROTOCOL,'files':{n:hashlib.sha256((ROOT/n).read_bytes()).hexdigest() for n in sorted(runtime.REQUIRED-{'version.json'})}}
@@ -17,3 +17,4 @@ with zipfile.ZipFile(bundle,'w',zipfile.ZIP_DEFLATED) as z:
 manifest={'app_id':runtime.APP_ID,'version':VERSION,'launcher_protocol':runtime.PROTOCOL,'url':f'https://raw.githubusercontent.com/Felix1312-coder/amazon-buybox-checker-updates/variation-monitor-updates/{bundle.name}','sha256':hashlib.sha256(bundle.read_bytes()).hexdigest()}
 (OUT/'latest.json').write_text(json.dumps(manifest,indent=2),encoding='utf8')
 print(json.dumps({'bundle':str(bundle),'manifest':str(OUT/'latest.json'),'sha256':manifest['sha256']}))
+

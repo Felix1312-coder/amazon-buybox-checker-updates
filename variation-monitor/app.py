@@ -5,13 +5,14 @@ from contextlib import contextmanager
 from pathlib import Path
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse, parse_qs
-from core import parse_import, parse_manual, evaluate, scan_page, ASIN, MARKETS, parse_family, dimension_key, market_browser_options
+from core import parse_import, parse_manual, evaluate, scan_page, ASIN, MARKETS, parse_family, dimension_key, market_browser_options, parse_snapshot_input, collect_snapshot, SnapshotCancelled, snapshot_workbook
 
 ROOT=Path(__file__).resolve().parent
 DATA=Path(os.environ.get('LOCALAPPDATA', str(Path.home()))) / 'AmazonVariationMonitor'
 DATA.mkdir(parents=True,exist_ok=True)
 LOCK=threading.Lock(); PROGRESS={'running':False,'text':'Bereit'}; TOKEN=uuid.uuid4().hex
 DISCOVERY={}
+SNAPSHOT_ACTIVE={"id":None}; SNAPSHOT_STOP=threading.Event()
 
 @contextmanager
 def db():
@@ -22,8 +23,12 @@ def db():
 with db() as c:
     c.executescript('''CREATE TABLE IF NOT EXISTS families(id TEXT PRIMARY KEY,name TEXT,market TEXT,variants TEXT, UNIQUE(name,market));
     CREATE TABLE IF NOT EXISTS checks(id INTEGER PRIMARY KEY, family_id TEXT, name TEXT, market TEXT, at TEXT, result TEXT, observations TEXT, expected TEXT);
-    CREATE TABLE IF NOT EXISTS settings(key TEXT PRIMARY KEY,value TEXT);''')
+    CREATE TABLE IF NOT EXISTS settings(key TEXT PRIMARY KEY,value TEXT);
+    CREATE TABLE IF NOT EXISTS snapshot_jobs(id TEXT PRIMARY KEY,name TEXT,created TEXT,finished TEXT,status TEXT,markets TEXT,error TEXT);
+    CREATE TABLE IF NOT EXISTS snapshot_items(job_id TEXT,market TEXT,asin TEXT,name TEXT,position INTEGER,status TEXT,at TEXT,note TEXT,found INTEGER,result TEXT,PRIMARY KEY(job_id,market,asin));''')
     c.execute('INSERT OR IGNORE INTO settings VALUES (?,?)',('config',json.dumps({'enabled':False,'time':'09:00','visible':True,'last_day':''})))
+
+with db() as c:c.execute("UPDATE snapshot_jobs SET status='Unterbrochen',error='App wurde während der Aufnahme geschlossen. Offene Prüfungen können fortgesetzt werden.' WHERE status='Läuft'")
 
 def config():
     with db() as c: return json.loads(c.execute('SELECT value FROM settings WHERE key="config"').fetchone()[0])
@@ -108,6 +113,22 @@ class Handler(BaseHTTPRequestHandler):
         path=urlparse(self.path).path
         if path=='/': return self.send((ROOT/'ui.html').read_text(encoding='utf8').replace('__TOKEN__',TOKEN).encode(),'text/html; charset=utf-8')
         if self.headers.get('X-Token')!=TOKEN: return self.send({'error':'Zugriff abgelehnt'},code=403)
+        if path.startswith('/api/snapshot'):
+            try:
+                q={k:v[0] for k,v in parse_qs(urlparse(self.path).query).items()}
+                if path=='/api/snapshots':return self.send({'jobs':snapshot_jobs(),'active':SNAPSHOT_ACTIVE['id']})
+                if path=='/api/snapshot/template':return self.send(('\ufeffASIN;Name\r\n').encode('utf8'),'text/csv; charset=utf-8')
+                if path=='/api/snapshot/detail':
+                    with db() as c:r=c.execute('SELECT * FROM snapshot_items WHERE job_id=? AND market=? AND asin=?',(q.get('id'),q.get('market'),q.get('asin'))).fetchone()
+                    if not r:raise ValueError('Ergebnis nicht gefunden.')
+                    item=dict(r);item['result']=json.loads(item['result']) if item['result'] else None
+                    return self.send(item)
+                if path=='/api/snapshot/export':
+                    content,kind=snapshot_export(q.get('id'),q.get('market',''))
+                    return self.send(content,kind)
+                if path=='/api/snapshot':return self.send(snapshot_page(q))
+                raise ValueError('Unbekannte Ist-Aufnahme-Aktion.')
+            except Exception as e:return self.send({'error':str(e)},code=400)
         if path=='/api/state':
             with db() as c:
                 history=[dict(r) for r in c.execute('SELECT id,family_id,name,market,at,result FROM checks ORDER BY id DESC LIMIT 500')]
@@ -133,6 +154,20 @@ class Handler(BaseHTTPRequestHandler):
             size=int(self.headers.get('Content-Length','0'))
             if size>8_000_000: raise ValueError('Datei zu groß (max. ca. 5 MB).')
             d=json.loads(self.rfile.read(size)); path=urlparse(self.path).path
+            if path=='/api/snapshot/preview':
+                parsed=snapshot_input(d)
+                return self.send({'count':len(parsed['seeds']),'duplicates':parsed['duplicates'],'preview':parsed['seeds'][:12]})
+            if path=='/api/snapshot/start':
+                ident=start_snapshot(d)
+                return self.send({'id':ident,'message':'Ist-Aufnahme gestartet.'})
+            if path=='/api/snapshot/resume':
+                ident=start_snapshot({},resume_id=d.get('id'))
+                return self.send({'id':ident,'message':'Offene Prüfungen werden fortgesetzt.'})
+            if path=='/api/snapshot/stop':
+                with LOCK:
+                    if not d.get('id') or SNAPSHOT_ACTIVE['id']!=d['id']:raise ValueError('Diese Aufnahme läuft nicht.')
+                    SNAPSHOT_STOP.set()
+                return self.send({'message':'Stop angefordert. Die aktuell geöffnete Seite wird noch beendet.'})
             if path=='/api/update':
                 with LOCK:
                     if PROGRESS['running']:raise ValueError('Bitte die laufende Prüfung abwarten.')
@@ -232,6 +267,130 @@ def discover(asin,market,visible):
     finally:
         with LOCK:PROGRESS['running']=False
 
+def snapshot_input(d):
+    if d.get('text','').strip():
+        return parse_snapshot_input(('ASIN\n'+d['text']).encode('utf8'),'input.csv')
+    try:data=base64.b64decode(d.get('data',''),validate=True)
+    except Exception:raise ValueError('Ungültige Upload-Datei.')
+    if len(data)>5_000_000:raise ValueError('Maximal 5 MB pro Importdatei.')
+    return parse_snapshot_input(data,str(d.get('filename','')))
+
+def snapshot_jobs():
+    with db() as c:
+        rows=c.execute("""SELECT j.*,COUNT(i.asin) total,
+          SUM(CASE WHEN i.status!='Ausstehend' THEN 1 ELSE 0 END) done,
+          SUM(CASE WHEN i.status IN ('Teilweise','Unklar') THEN 1 ELSE 0 END) unclear
+          FROM snapshot_jobs j LEFT JOIN snapshot_items i ON i.job_id=j.id GROUP BY j.id ORDER BY j.created DESC,j.rowid DESC""").fetchall()
+    return [{**dict(r),'markets':json.loads(r['markets'])} for r in rows]
+
+def snapshot_page(q):
+    ident=q.get('id');page=max(1,int(q.get('page',1)));market=q.get('market','');search=q.get('q','').strip()[:200]
+    with db() as c:
+        job=c.execute('SELECT * FROM snapshot_jobs WHERE id=?',(ident,)).fetchone()
+        if not job:raise ValueError('Ist-Aufnahme nicht gefunden.')
+        where='job_id=?';args=[ident]
+        if market:where+=' AND market=?';args.append(market)
+        if search:where+=' AND (instr(lower(asin),lower(?))>0 OR instr(lower(name),lower(?))>0)';args.extend([search,search])
+        count=c.execute('SELECT COUNT(*) FROM snapshot_items WHERE '+where,args).fetchone()[0]
+        rows=c.execute('SELECT job_id,market,asin,name,status,at,note,found FROM snapshot_items WHERE '+where+' ORDER BY position LIMIT 50 OFFSET ?',[*args,(page-1)*50]).fetchall()
+    return {'rows':[dict(r) for r in rows],'count':count,'page':page,'pages':max(1,(count+49)//50)}
+
+def start_snapshot(d,resume_id=None):
+    if resume_id is None:
+        parsed=snapshot_input(d);markets=d.get('markets')
+        if not isinstance(markets,list) or not markets or any(m not in MARKETS for m in markets):raise ValueError('Bitte mindestens einen gültigen Marktplatz auswählen.')
+        markets=list(dict.fromkeys(markets));ident=uuid.uuid4().hex
+        name=str(d.get('name') or d.get('filename') or 'Ist-Aufnahme').strip()[:200]
+    else:ident=str(resume_id)
+    with LOCK:
+        if PROGRESS['running']:raise ValueError('Bitte die laufende Prüfung abwarten.')
+        with db() as c:
+            if resume_id is None:
+                now=datetime.now().astimezone().isoformat(timespec='seconds')
+                c.execute('INSERT INTO snapshot_jobs VALUES(?,?,?,?,?,?,?)',(ident,name,now,'','Läuft',json.dumps(markets),''))
+                position=0
+                for market in markets:
+                    for seed in parsed['seeds']:
+                        c.execute('INSERT INTO snapshot_items VALUES(?,?,?,?,?,?,?,?,?,?)',(ident,market,seed['asin'],seed['name'],position,'Ausstehend','','',None,None));position+=1
+            else:
+                if not c.execute('SELECT 1 FROM snapshot_jobs WHERE id=?',(ident,)).fetchone():raise ValueError('Aufnahme nicht gefunden.')
+                if not c.execute("SELECT 1 FROM snapshot_items WHERE job_id=? AND status='Ausstehend'",(ident,)).fetchone():raise ValueError('Keine offenen Prüfungen. Für einen neuen Ist-Zustand eine neue Aufnahme starten.')
+                c.execute("UPDATE snapshot_jobs SET status='Läuft',finished='',error='' WHERE id=?",(ident,))
+        SNAPSHOT_STOP.clear();SNAPSHOT_ACTIVE['id']=ident
+        PROGRESS.update(running=True,text='Ist-Aufnahme: Browser wird gestartet …')
+        try:threading.Thread(target=run_snapshot,args=(ident,config()['visible']),daemon=True).start()
+        except Exception:
+            SNAPSHOT_ACTIVE['id']=None;PROGRESS['running']=False
+            with db() as c:c.execute("UPDATE snapshot_jobs SET status='Fehlgeschlagen',error='Browserstart nicht möglich. Bitte fortsetzen.' WHERE id=?",(ident,))
+            raise
+    return ident
+
+def snapshot_process(ident,page_for,scanner=scan_page):
+    with db() as c:
+        tasks=[dict(r) for r in c.execute("SELECT market,asin,name FROM snapshot_items WHERE job_id=? AND status='Ausstehend' ORDER BY position",(ident,))]
+        total=c.execute('SELECT COUNT(*) FROM snapshot_items WHERE job_id=?',(ident,)).fetchone()[0]
+    done=total-len(tasks);cache={}
+    for task in tasks:
+        if SNAPSHOT_STOP.is_set():break
+        market=task['market'];page=page_for(market)
+        def read(asin):
+            key=(market,asin)
+            if key not in cache:
+                PROGRESS['text']=f"Ist-Aufnahme · {done}/{total} Eingabe-ASINs/Märkte fertig · {market} · {task['asin']} → {asin}"
+                try:
+                    o=scanner(page,market,asin)
+                    if o.get('error') or o.get('language_error'):
+                        if SNAPSHOT_STOP.is_set():raise SnapshotCancelled()
+                        o=scanner(page,market,asin)
+                except SnapshotCancelled:raise
+                except Exception as e:o={'error':str(e)[:1000]}
+                cache[key]={**o,'at':datetime.now().astimezone().isoformat(timespec='seconds')}
+            return cache[key]
+        try:r=collect_snapshot(task['asin'],market,read,cancelled=SNAPSHOT_STOP.is_set)
+        except SnapshotCancelled:break
+        now=datetime.now().astimezone().isoformat(timespec='seconds')
+        with db() as c:
+            c.execute('UPDATE snapshot_items SET status=?,at=?,note=?,found=?,result=? WHERE job_id=? AND market=? AND asin=?',(r['status'],now,r['note'],len(r['asins']) if r['status']!='Unklar' else None,json.dumps(r,ensure_ascii=False),ident,market,task['asin']))
+        done+=1
+    return done==total
+
+def run_snapshot(ident,visible):
+    final='Fehlgeschlagen';error=''
+    try:
+        from playwright.sync_api import sync_playwright
+        with sync_playwright() as p:
+            browser=None
+            for channel in ['msedge','chrome',None]:
+                try:browser=p.chromium.launch(channel=channel,headless=not visible);break
+                except Exception:pass
+            if not browser:raise RuntimeError('Bitte Microsoft Edge oder Google Chrome installieren.')
+            pages={}
+            def page_for(market):
+                if market not in pages:pages[market]=browser.new_context(**market_browser_options(market)).new_page()
+                return pages[market]
+            try:complete=snapshot_process(ident,page_for)
+            finally:browser.close()
+        final='Abgeschlossen' if complete else 'Gestoppt'
+    except Exception as e:error=str(e)[:1000]
+    finally:
+        with db() as c:c.execute('UPDATE snapshot_jobs SET status=?,finished=?,error=? WHERE id=?',(final,datetime.now().astimezone().isoformat(timespec='seconds'),error,ident))
+        with LOCK:
+            SNAPSHOT_ACTIVE['id']=None;PROGRESS.update(running=False,text='Ist-Aufnahme '+final.lower()+('. '+error if error else '. Ergebnisse und Excel unter „Ist-Zustand“.'))
+
+def snapshot_export(ident,market=''):
+    with db() as c:
+        c.execute('BEGIN')
+        r=c.execute('SELECT * FROM snapshot_jobs WHERE id=?',(ident,)).fetchone()
+        if not r:raise ValueError('Ist-Aufnahme nicht gefunden.')
+        job=dict(r);markets=json.loads(job['markets'])
+        if market and market not in markets:raise ValueError('Marktplatz gehört nicht zu dieser Aufnahme.')
+        items=[dict(r) for r in c.execute('SELECT * FROM snapshot_items WHERE job_id=? ORDER BY position',(ident,))]
+    if market:return snapshot_workbook(job,items,market),'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+    output=io.BytesIO()
+    with zipfile.ZipFile(output,'w',zipfile.ZIP_DEFLATED) as z:
+        for m in markets:z.writestr('Varianten-Ist-'+m+'.xlsx',snapshot_workbook(job,items,m))
+    return output.getvalue(),'application/zip'
+
 if __name__=='__main__':
     multiprocessing.freeze_support()
     if sys.stdout is None: sys.stdout=open(os.devnull,'w')
@@ -269,3 +428,4 @@ if __name__=='__main__':
         tk.Button(root,text='App erneut öffnen',command=lambda:webbrowser.open(url)).pack()
         root.mainloop()
     finally:server.shutdown()
+
