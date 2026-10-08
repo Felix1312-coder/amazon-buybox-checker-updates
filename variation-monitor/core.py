@@ -362,6 +362,13 @@ def collect_snapshot(seed,market,read,cancelled=lambda:False,max_members=500):
     return {'status':'Teilweise' if notes or incomplete else 'Gelesen','note':' '.join(dict.fromkeys(notes)),'asins':sorted(known),'variants':variants}
 
 
+def snapshot_structure(status,count):
+    if status=='Ausstehend':return 'Noch nicht geprüft'
+    if status!='Gelesen' or not count:return 'Unklar – keine sichere Aussage zur Variation'
+    if count==1:return 'Keine Variation – Einzelprodukt'
+    return f'Variation vorhanden – {count} ASINs'
+
+
 def snapshot_result(item):
     value=item.get('result')
     return json.loads(value) if isinstance(value,str) and value else value or {}
@@ -385,7 +392,7 @@ def snapshot_comparison(items,markets):
             cell=row['markets'].setdefault(market,{'asins':[],'complete':False,'status':'Nicht in Länderliste','variants':[]})
             if cell['complete']:
                 key=tuple(cell['asins']);code=signatures.setdefault(key,chr(65+len(signatures)))
-                cell['label']=('Variation' if len(key)>1 else 'Keine Variation erkannt')+f' · {len(key)} ASIN'+('s' if len(key)>1 else '')+f' · Gruppe {code}'
+                cell['label']=('Variation' if len(key)>1 else 'Keine Variation – Einzelprodukt')+f' · {len(key)} ASIN'+('s' if len(key)>1 else '')+f' · Gruppe {code}'
             else:
                 unknown.append(market);cell['label']=cell['status']+' · nicht sicher vergleichbar'
         if len(signatures)>1:verdict='Abweichend'
@@ -438,7 +445,7 @@ def add_comparison_sheet(wb,items,markets):
             c=r['markets'][m]
             cells.append(c['label']+'\n'+('\n'.join((v.get('title') or 'Produktname nicht erfasst')+' · '+v['asin'] for v in c['variants']) or 'Keine gesicherten Produktdaten')+'\n'+c.get('note','')+'\n'+str(c.get('at') or ''))
         rows.append([r['name'] or 'Produktname nicht erfasst',r['asin'],r['verdict'],r['same'],r['unknown'],*cells])
-    return add_report_sheet(wb,'Ländervergleich',['Produkt / Name aus Liste','Eingabe-ASIN','Ergebnis','Gleiche Zusammensetzung','Unklare / offene Länder',*markets],rows,[42,18,28,32,24]+[48]*len(markets),'Pro Eingabeprodukt: gleiche Gruppe A/B/... bedeutet dieselben enthaltenen ASINs innerhalb dieser Zeile. Namen, Farbe, Stil und Größe beeinflussen den Vergleich nicht. Unvollständige Ergebnisse gelten nie als einheitlich. Keine Variation erkannt = nur die Eingabe-ASIN gefunden. Vergleich der gespeicherten Zeitpunkte.')
+    return add_report_sheet(wb,'Ländervergleich',['Produkt / Name aus Liste','Eingabe-ASIN','Ergebnis','Gleiche Zusammensetzung','Unklare / offene Länder',*markets],rows,[42,18,28,32,24]+[48]*len(markets),'Pro Eingabeprodukt: gleiche Gruppe A/B/... bedeutet dieselben enthaltenen ASINs innerhalb dieser Zeile. Namen, Farbe, Stil und Größe beeinflussen den Vergleich nicht. Unvollständige Ergebnisse gelten nie als einheitlich. Keine Variation – Einzelprodukt = nur die Eingabe-ASIN gefunden. Vergleich der gespeicherten Zeitpunkte.')
 
 
 def snapshot_workbook(job,items,market):
@@ -459,15 +466,15 @@ def snapshot_workbook(job,items,market):
     safe_append(summary,['Stand des Laufs',job['status'],'Erstellt',job['created']])
     safe_append(summary,['Momentaufnahme der auslesbaren Amazon-Varianten. „Gelesen“ bedeutet nicht fachlich korrekt. Unvollständige Seiten und offene Prüfungen sind gekennzeichnet.'])
     safe_append(summary,['Zeiten entsprechen der lokalen Rechnerzeit. Kolleg:innen bewerten in den beiden letzten Spalten des Blatts Varianten.'])
-    summary_headers=['Eingabe-ASIN','Name aus Liste','Marktplatz','Lesestatus','Gefundene ASINs','Hinweis','Ausgelesen am','Amazon-Link']
+    summary_headers=['Eingabe-ASIN','Name aus Liste','Marktplatz','Lesestatus','Gefundene ASINs','Hinweis','Ausgelesen am','Amazon-Link','Variation?']
     safe_append(summary,summary_headers)
-    headers=['Gruppe','Eingabe-ASINs','Marktplatz','ASIN','Produkttitel','Farbe','Stil','Größe','Weitere Merkmale','Lesestatus','Hinweis','Ausgelesen am','Amazon-Link','Bewertung','Kommentar']
+    headers=['Gruppe','Eingabe-ASINs','Marktplatz','ASIN','Produkttitel','Farbe','Stil','Größe','Weitere Merkmale','Lesestatus','Hinweis','Ausgelesen am','Amazon-Link','Bewertung','Kommentar','Variation?']
     safe_append(sheet,headers)
     groups={}
     for item in items:
         if item['market']!=market:continue
         r=json.loads(item['result']) if isinstance(item.get('result'),str) and item['result'] else item.get('result') or {}
-        safe_append(summary,[item['asin'],item['name'],market,item['status'],len(r['asins']) if 'asins' in r and r.get('status')!='Unklar' else None,item.get('note',''),date(item.get('at')),market_product_url(market,item['asin'])])
+        safe_append(summary,[item['asin'],item['name'],market,item['status'],len(r['asins']) if 'asins' in r and r.get('status')!='Unklar' else None,item.get('note',''),date(item.get('at')),market_product_url(market,item['asin']),snapshot_structure(item['status'],len(set(r.get('asins') or [])))])
         if not r:continue
         # Deduplicate identical discoveries, never merge different or overlapping sets.
         key=tuple(sorted(set(r.get('asins') or [item['asin']])))
@@ -483,10 +490,10 @@ def snapshot_workbook(job,items,market):
     for number,group in enumerate(groups.values(),1):
         for asin,v in sorted(group['variants'].items()):
             attrs=v['attributes'];note=' '.join(dict.fromkeys([v.get('note',''),*group['notes']])).strip()
-            safe_append(sheet,[f'{market}-{number:03}',', '.join(group['seeds']),market,asin,v['title'],attrs.get('color',''),attrs.get('style',''),attrs.get('size',''),'; '.join(DIMENSION_NAMES.get(k,k)+': '+str(value) for k,value in attrs.items() if k not in ('color','style','size')),v['status'],note,date(v.get('at')),v['url'],'Offen',''])
+            safe_append(sheet,[f'{market}-{number:03}',', '.join(group['seeds']),market,asin,v['title'],attrs.get('color',''),attrs.get('style',''),attrs.get('size',''),'; '.join(DIMENSION_NAMES.get(k,k)+': '+str(value) for k,value in attrs.items() if k not in ('color','style','size')),v['status'],note,date(v.get('at')),v['url'],'Offen','',snapshot_structure('Gelesen' if all(st=='Gelesen' for st in group['statuses']) else 'Unklar',len(group['variants']))])
     validation=DataValidation(type='list',formula1='"Offen,Passt,Bitte ändern,Unklar"');sheet.add_data_validation(validation)
     if sheet.max_row>=2:validation.add(f'N2:N{sheet.max_row}')
-    for ws,head,widths in [(summary,5,[18,35,14,18,20,70,23,58]),(sheet,1,[14,32,13,18,48,22,32,22,40,18,65,23,58,20,45])]:
+    for ws,head,widths in [(summary,5,[18,35,14,18,20,70,23,58,40]),(sheet,1,[14,32,13,18,48,22,32,22,40,18,65,23,58,20,45,40])]:
         ws.freeze_panes=f'A{head+1}';ws.auto_filter.ref=f'A{head}:{ws.cell(ws.max_row,len(widths)).coordinate}'
         ws.sheet_view.zoomScale=90
         for col,width in enumerate(widths,1):ws.column_dimensions[ws.cell(1,col).column_letter].width=width
@@ -521,13 +528,13 @@ def snapshot_workbook(job,items,market):
         variants=sorted(g['variants'].values(),key=lambda v:v['asin'])
         name=next((n for n in g['names'] if n),None) or next((v.get('title') for v in variants if v.get('title')),'Produktname nicht erfasst')
         complete=all(st=='Gelesen' for st in g['statuses'])
-        state=('Variation vorhanden' if len(variants)>1 else 'Keine Variation erkannt') if complete else 'Unvollständig / unklar'
+        state=snapshot_structure('Gelesen' if complete else 'Unklar',len(variants))
         cards=[(v.get('title') or 'Produktname nicht erfasst')+'\nASIN: '+v['asin']+'\n'+' · '.join(DIMENSION_NAMES.get(k,k)+': '+str(val) for k,val in v.get('attributes',{}).items())+'\n'+v.get('status','') for v in variants]
         rows.append([name,f'{market}-{number:03}',state,len(variants),', '.join(g['seeds']),' '.join(dict.fromkeys(g['notes'])),*cards,*(['']*(max_members-len(cards)))])
     for item in items:
         if item['market']==market and not snapshot_result(item):
             rows.append([item.get('name') or 'Produktname noch nicht erfasst','',item['status'],None,item['asin'],item.get('note',''),*(['']*max_members)])
-    grouped=add_report_sheet(wb,'Variationsgruppen',['Produkt / Name aus Liste','Gruppe','Variation?','Produkte','Eingabe-ASINs','Hinweis']+[f'Produkt {i+1}' for i in range(max_members)],rows,[42,14,26,12,25,42]+[42]*max_members,'Eine Zeile = eine beobachtete Variationsgruppe. Zusammengehörige Produkte stehen nebeneinander, Produktname zuerst. Unterschiedliche oder überlappende Gruppen bleiben getrennt. Details und Bewertungsfelder stehen im Blatt Varianten. Offene / unklare Prüfungen sind keine bestätigten Einzelprodukte.')
+    grouped=add_report_sheet(wb,'Variationsgruppen',['Produkt / Name aus Liste','Gruppe','Variation?','Produkte','Eingabe-ASINs','Hinweis']+[f'Produkt {i+1}' for i in range(max_members)],rows,[42,14,26,12,25,42]+[42]*max_members,'Eine Zeile = eine beobachtete Variationsgruppe. Zusammengehörige Produkte stehen nebeneinander, Produktname zuerst. Unterschiedliche oder überlappende Gruppen bleiben getrennt. Details und Bewertungsfelder stehen im Blatt Varianten. Eine sicher gelesene einzelne ASIN ist keine Variation, auch bei angezeigtem Stil, Farbe oder Größe. Offene / unklare Prüfungen sind keine bestätigten Einzelprodukte.')
     for rownum,g in enumerate(groups.values(),4):
         for col,v in enumerate(sorted(g['variants'].values(),key=lambda v:v['asin']),7):
             grouped.cell(rownum,col).hyperlink=market_product_url(market,v['asin'])

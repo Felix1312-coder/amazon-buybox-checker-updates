@@ -65,6 +65,17 @@ def main():
    job=app.snapshot_jobs()[0];_,items=app.snapshot_data(job['id'])
    assert len(items)==6 and sum(i['status']=='Gelesen' for i in items)==4
    assert [(i['market'],i['asin']) for i in items[-2:]]==[('UK',A),('IE',B)]
+   # Re-render a previously stored singleton with a style label; no Amazon rescan.
+   with app.db() as c:
+    row=c.execute('SELECT result FROM snapshot_items WHERE job_id=? AND market=? AND asin=?',(job['id'],'IT',A)).fetchone()
+    result=json.loads(row['result']);result['asins']=[A];result['variants']=[v for v in result['variants'] if v['asin']==A]
+    c.execute('UPDATE snapshot_items SET result=?,found=1 WHERE job_id=? AND market=? AND asin=?',(json.dumps(result),job['id'],'IT',A))
+   page.locator('#snapViewResults').click()
+   page.wait_for_function("document.querySelector('#snapTable').innerText.includes('Keine Variation – Einzelprodukt')")
+   page.get_by_role('button',name='Varianten ansehen').first.click()
+   page.wait_for_function("document.querySelector('#detailbody').innerText.includes('Keine Variation – Einzelprodukt')")
+   assert 'Classico' in page.locator('#detailbody').inner_text()
+   page.locator('#detail button').first.click()
    assert app.families()==[]
    browser.close()
   (qa/'snapshot-qa.json').write_text(json.dumps({'ok':True,'checks':['CSV upload and preview','Selected IT + DE Cartesian product','No selection disables start','Live progress and persisted results','Child ASIN style/color/size display','Filter does not limit export','One XLSX per market','ZIP contains both markets','Deduplicated family export','No Soll modifications']},indent=2))

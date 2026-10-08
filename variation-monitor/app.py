@@ -5,7 +5,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse, parse_qs
-from core import parse_import, parse_manual, evaluate, scan_page, ASIN, MARKETS, parse_family, dimension_key, market_browser_options, parse_snapshot_input, collect_snapshot, SnapshotCancelled, snapshot_workbook, snapshot_comparison
+from core import parse_import, parse_manual, evaluate, scan_page, ASIN, MARKETS, parse_family, dimension_key, market_browser_options, parse_snapshot_input, collect_snapshot, SnapshotCancelled, snapshot_workbook, snapshot_comparison, snapshot_structure
 
 ROOT=Path(__file__).resolve().parent
 DATA=Path(os.environ.get('LOCALAPPDATA', str(Path.home()))) / 'AmazonVariationMonitor'
@@ -125,6 +125,7 @@ class Handler(BaseHTTPRequestHandler):
                     with db() as c:r=c.execute('SELECT * FROM snapshot_items WHERE job_id=? AND market=? AND asin=?',(q.get('id'),q.get('market'),q.get('asin'))).fetchone()
                     if not r:raise ValueError('Ergebnis nicht gefunden.')
                     item=dict(r);item['result']=json.loads(item['result']) if item['result'] else None
+                    item['structure']=snapshot_structure(item['status'],len(set((item['result'] or {}).get('asins') or [])))
                     return self.send(item)
                 if path=='/api/snapshot/export':
                     content,kind=snapshot_export(q.get('id'),q.get('market',''))
@@ -299,7 +300,7 @@ def snapshot_page(q):
         if search:where+=' AND (instr(lower(asin),lower(?))>0 OR instr(lower(name),lower(?))>0)';args.extend([search,search])
         count=c.execute('SELECT COUNT(*) FROM snapshot_items WHERE '+where,args).fetchone()[0]
         rows=c.execute('SELECT job_id,market,asin,name,status,at,note,found FROM snapshot_items WHERE '+where+' ORDER BY position LIMIT 50 OFFSET ?',[*args,(page-1)*50]).fetchall()
-    return {'rows':[dict(r) for r in rows],'count':count,'page':page,'pages':max(1,(count+49)//50)}
+    return {'rows':[{**dict(r),'structure':snapshot_structure(r['status'],r['found'])} for r in rows],'count':count,'page':page,'pages':max(1,(count+49)//50)}
 
 def snapshot_extra_lists(d):
     extra=d.get('market_lists') or {}

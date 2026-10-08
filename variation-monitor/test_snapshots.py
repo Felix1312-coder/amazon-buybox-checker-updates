@@ -108,7 +108,7 @@ class ComparisonExportTests(unittest.TestCase):
  def test_same_count_different_members_and_no_variation(self):
   from core import snapshot_comparison
   r=snapshot_comparison([self.item('DE',[A,B]),self.item('IT',[A,C]),self.item('FR',[A])],['DE','IT','FR'])['rows'][0]
-  self.assertEqual(r['verdict'],'Abweichend');self.assertIn('Keine Variation erkannt',r['markets']['FR']['label'])
+  self.assertEqual(r['verdict'],'Abweichend');self.assertIn('Keine Variation – Einzelprodukt',r['markets']['FR']['label'])
   self.assertIn('Gruppe B',r['markets']['IT']['label'])
  def test_partial_and_missing_never_uniform(self):
   from core import snapshot_comparison
@@ -155,3 +155,20 @@ class CountryListTests(SnapshotStorageTests):
  def test_ireland_url_and_locale(self):
   from core import market_product_url,market_browser_options
   self.assertIn('www.amazon.ie/dp/',market_product_url('IE',A));self.assertEqual(market_browser_options('IE')['locale'],'en-IE')
+
+class SingletonDisplayTests(unittest.TestCase):
+ def test_singleton_with_style_is_not_variation_in_all_excel_sheets(self):
+  from core import snapshot_structure,snapshot_comparison
+  from openpyxl import load_workbook
+  item={'market':'UK','asin':A,'name':'MG 280','status':'Gelesen','result':json.dumps({'asins':[A],'variants':[{'asin':A,'title':'Massage mat','attributes':{'style':'Massage mat'},'status':'Gelesen','url':'https://www.amazon.co.uk/dp/'+A}]}),'note':''}
+  label='Keine Variation – Einzelprodukt'
+  self.assertEqual(snapshot_structure('Gelesen',1),label)
+  self.assertNotEqual(snapshot_structure('Teilweise',1),label)
+  self.assertNotEqual(snapshot_structure('Unklar',1),label)
+  self.assertNotEqual(snapshot_structure('Gelesen',0),label)
+  w=load_workbook(io.BytesIO(snapshot_workbook({'name':'Saved scan','status':'Abgeschlossen','created':''},[item],'UK')))
+  self.assertEqual(w['Variationsgruppen']['C4'].value,label)
+  self.assertEqual(w['Übersicht']['I6'].value,label)
+  self.assertEqual(w['Varianten']['P2'].value,label)
+  self.assertIn(label,w['Ländervergleich']['F4'].value)
+  self.assertEqual(w['Varianten']['G2'].value,'Massage mat');w.close()
