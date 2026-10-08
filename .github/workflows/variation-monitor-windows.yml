@@ -6,6 +6,7 @@ on:
       - '.github/workflows/variation-monitor-windows.yml'
 permissions:
   contents: read
+  actions: read
 jobs:
   windows:
     runs-on: windows-latest
@@ -27,6 +28,16 @@ jobs:
       - name: Test Excel upload, multi-market snapshots and exports in Edge
         working-directory: variation-monitor
         run: python snapshot_ui_smoke.py
+      - name: Load the existing 0.4.0 launcher for compatibility verification
+        uses: actions/download-artifact@v4
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          run-id: 37311789786
+          name: Amazon-Variation-Monitor-0.4.0-Windows
+          path: variation-monitor/bootstrap
+      - name: Verify the new payload and Excel exporter in the existing EXE
+        working-directory: variation-monitor
+        run: python frozen_snapshot_probe.py
       - uses: actions/upload-artifact@v4
         if: always()
         with:

@@ -396,7 +396,7 @@ if __name__=='__main__':
     if sys.stdout is None: sys.stdout=open(os.devnull,'w')
     if sys.stderr is None: sys.stderr=open(os.devnull,'w')
     if '--payload-probe' in sys.argv:
-        Path(sys.argv[sys.argv.index('--payload-probe')+1]).write_text(json.dumps({'version':updater.current_version(),'source':str(ROOT),'families':len(families())}),encoding='utf8')
+        Path(sys.argv[sys.argv.index('--payload-probe')+1]).write_text(json.dumps({'version':updater.current_version(),'source':str(ROOT),'families':len(families()),'snapshot_excel_bytes':len(snapshot_workbook({'name':'Compatibility check','status':'Abgeschlossen','created':''},[],'IT'))}),encoding='utf8')
         raise SystemExit(0)
     if '--self-test' in sys.argv:
         import selftest
