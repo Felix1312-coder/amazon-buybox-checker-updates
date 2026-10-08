@@ -77,6 +77,15 @@ def main():
    assert 'Classico' in page.locator('#detailbody').inner_text()
    page.locator('#detail button').first.click()
    assert app.families()==[]
+   page.get_by_role('button',name='Ist-Zustand als Soll übernehmen',exact=True).click()
+   page.locator('#baselineApply').wait_for(state='visible')
+   assert '1 Gruppen' in page.locator('#baselineApply').inner_text()
+   page.locator('#baselineTime').fill('10:15')
+   page.locator('#baselineApply').click()
+   page.wait_for_function("document.querySelector('#familytable').innerText.includes('Ist ·')")
+   assert len(app.families())==1 and app.families()[0]['market']=='DE'
+   assert app.config()['enabled'] and app.config()['time']=='10:15'
+   assert len(app.snapshot_data(job['id'])[1])==6
    browser.close()
   (qa/'snapshot-qa.json').write_text(json.dumps({'ok':True,'checks':['CSV upload and preview','Selected IT + DE Cartesian product','No selection disables start','Live progress and persisted results','Child ASIN style/color/size display','Filter does not limit export','One XLSX per market','ZIP contains both markets','Deduplicated family export','No Soll modifications']},indent=2))
  finally:server.shutdown()

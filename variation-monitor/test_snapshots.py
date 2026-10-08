@@ -172,3 +172,32 @@ class SingletonDisplayTests(unittest.TestCase):
   self.assertEqual(w['Varianten']['P2'].value,label)
   self.assertIn(label,w['Ländervergleich']['F4'].value)
   self.assertEqual(w['Varianten']['G2'].value,'Massage mat');w.close()
+
+class BaselineTests(SnapshotStorageTests):
+ def ready(self):
+  ident=self.create(['IT','DE']);app.snapshot_process(ident,lambda m:m,lambda p,m,a:observation(a,m));app.PROGRESS['running']=False
+  return ident
+ def test_adopt_preserves_snapshots_and_enables_schedule(self):
+  ident=self.ready();before=app.snapshot_data(ident)
+  plan=app.adopt_snapshot({'id':ident});self.assertEqual(len(plan['groups']),2)
+  self.assertEqual(plan['groups'][0]['variants'][A]['attributes'],{})
+  app.adopt_snapshot({'id':ident,'apply':True,'token':plan['token'],'daily':True,'time':'10:15'})
+  self.assertEqual(app.snapshot_data(ident),before);self.assertEqual(len(app.families()),3)
+  self.assertEqual(app.config()['time'],'10:15');self.assertTrue(app.config()['enabled'])
+  again=app.adopt_snapshot({'id':ident});self.assertEqual(again['groups'],[]);self.assertEqual(again['unchanged'],2)
+ def test_stale_preview_rejected_and_existing_soll_untouched(self):
+  ident=self.ready();plan=app.adopt_snapshot({'id':ident})
+  with app.db() as c:c.execute('UPDATE families SET name=? WHERE id=?',('Changed','existing'))
+  with self.assertRaisesRegex(ValueError,'geändert'):app.adopt_snapshot({'id':ident,'apply':True,'token':plan['token']})
+  self.assertEqual(len(app.families()),1)
+ def test_conflicts_and_unclear_are_not_adopted(self):
+  ident=self.ready()
+  with app.db() as c:
+   c.execute('UPDATE families SET variants=? WHERE id=?',(json.dumps({A:''}),'existing'))
+   c.execute('UPDATE snapshot_items SET status=? WHERE job_id=? AND market=? AND asin=?',('Unklar',ident,'DE',B))
+  plan=app.adopt_snapshot({'id':ident});self.assertFalse(plan['groups']);self.assertTrue(plan['skipped'])
+ def test_opt_in_attributes_and_split_detection(self):
+  from core import evaluate
+  ident=self.ready();plan=app.adopt_snapshot({'id':ident,'attributes':True})
+  self.assertEqual(plan['groups'][0]['variants'][A]['attributes']['style'],'Classico')
+  self.assertEqual(evaluate(plan['groups'][0]['variants'],{A:observation(A,members=[A]),B:observation(B,members=[B])})['status'],'Abweichung')

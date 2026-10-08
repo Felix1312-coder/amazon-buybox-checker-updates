@@ -5,7 +5,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse, parse_qs
-from core import parse_import, parse_manual, evaluate, scan_page, ASIN, MARKETS, parse_family, dimension_key, market_browser_options, parse_snapshot_input, collect_snapshot, SnapshotCancelled, snapshot_workbook, snapshot_comparison, snapshot_structure
+from core import parse_import, parse_manual, evaluate, scan_page, ASIN, MARKETS, parse_family, dimension_key, market_browser_options, parse_snapshot_input, collect_snapshot, SnapshotCancelled, snapshot_workbook, snapshot_comparison, snapshot_structure, snapshot_baseline
 
 ROOT=Path(__file__).resolve().parent
 DATA=Path(os.environ.get('LOCALAPPDATA', str(Path.home()))) / 'AmazonVariationMonitor'
@@ -161,6 +161,8 @@ class Handler(BaseHTTPRequestHandler):
             if path=='/api/snapshot/preview':
                 parsed=snapshot_input(d)
                 return self.send({'count':len(parsed['seeds']),'duplicates':parsed['duplicates'],'preview':parsed['seeds'][:12]})
+            if path=='/api/snapshot/baseline':
+                return self.send(adopt_snapshot(d))
             if path=='/api/snapshot/extend':
                 added=extend_snapshot(d)
                 return self.send({'message':f'{added} neue Prüfungen ergänzt. Vorhandene Ergebnisse bleiben erhalten.','added':added})
@@ -301,6 +303,26 @@ def snapshot_page(q):
         count=c.execute('SELECT COUNT(*) FROM snapshot_items WHERE '+where,args).fetchone()[0]
         rows=c.execute('SELECT job_id,market,asin,name,status,at,note,found FROM snapshot_items WHERE '+where+' ORDER BY position LIMIT 50 OFFSET ?',[*args,(page-1)*50]).fetchall()
     return {'rows':[{**dict(r),'structure':snapshot_structure(r['status'],r['found'])} for r in rows],'count':count,'page':page,'pages':max(1,(count+49)//50)}
+
+def adopt_snapshot(d):
+    with LOCK:
+        if PROGRESS['running']:raise ValueError('Bitte die laufende Prüfung zuerst beenden.')
+        job,items=snapshot_data(d.get('id'));stored=families()
+        plan=snapshot_baseline(items,stored,bool(d.get('attributes')))
+        token=hashlib.sha256(json.dumps([job,items,stored,bool(d.get('attributes'))],sort_keys=True).encode()).hexdigest()
+        if not d.get('apply'):return {**plan,'token':token,'job':job['name']}
+        if d.get('token')!=token:raise ValueError('Die Aufnahme oder der Soll-Zustand wurde geändert. Bitte Vorschau erneut öffnen.')
+        if not plan['groups']:raise ValueError('Keine neuen sicher übernehmbaren Gruppen vorhanden.')
+        schedule=d.get('daily',False);clock=d.get('time','09:00')
+        if schedule:datetime.strptime(clock,'%H:%M')
+        with db() as c:
+            for g in plan['groups']:
+                c.execute('INSERT INTO families VALUES(?,?,?,?)',(uuid.uuid4().hex,g['name'],g['market'],json.dumps(g['variants'])))
+            if schedule:
+                cfg=json.loads(c.execute('SELECT value FROM settings WHERE key="config"').fetchone()[0])
+                cfg.update(enabled=True,time=clock)
+                c.execute('UPDATE settings SET value=? WHERE key="config"',(json.dumps(cfg),))
+        return {'message':f"{len(plan['groups'])} Soll-Gruppen übernommen. "+('Tägliche Prüfung aktiviert.' if schedule else 'Manuelle Prüfung und Zeitplan unter Variantenfamilien / Einstellungen verfügbar.')}
 
 def snapshot_extra_lists(d):
     extra=d.get('market_lists') or {}

@@ -362,6 +362,43 @@ def collect_snapshot(seed,market,read,cancelled=lambda:False,max_members=500):
     return {'status':'Teilweise' if notes or incomplete else 'Gelesen','note':' '.join(dict.fromkeys(notes)),'asins':sorted(known),'variants':variants}
 
 
+def snapshot_baseline(items,existing,include_attributes=False):
+    groups={};skipped=[];evidence={}
+    for item in items:
+        r=snapshot_result(item);members=tuple(sorted(set(r.get('asins') or [item['asin']])))
+        for a in members:evidence.setdefault((item['market'],a),set()).add((members,item['status']))
+    for item in items:
+        r=snapshot_result(item);members=tuple(sorted(set(r.get('asins') or [])))
+        if item['status']!='Gelesen' or not members or item['asin'] not in members:
+            skipped.append({'market':item['market'],'asin':item['asin'],'reason':'Nicht vollständig und sicher gelesen.'});continue
+        key=(item['market'],members)
+        variants={v['asin']:v for v in r.get('variants',[])}
+        if any(a not in variants or variants[a].get('status')!='Gelesen' for a in members):
+            skipped.append({'market':item['market'],'asin':item['asin'],'reason':'Produktdetails unvollständig.'});continue
+        attrs={a:{'label':variants[a].get('title',''),'attributes':{k:v for k,v in variants[a].get('attributes',{}).items() if k in ('color','style','size')} if include_attributes else {}} for a in members}
+        group={'market':item['market'],'name':'Ist · '+(item.get('name') or variants[item['asin']].get('title') or item['asin'])[:130]+' · '+members[0],'variants':attrs,'members':members}
+        if key in groups and include_attributes and groups[key]['variants']!=attrs:groups[key]['conflict']=True
+        else:groups.setdefault(key,group)
+    accepted=[];unchanged=0
+    for (market,members),g in groups.items():
+        reasons=[]
+        if g.get('conflict'):reasons.append('Widersprüchliche Merkmalswerte.')
+        if any(status!='Gelesen' or other!=members for a in members for other,status in evidence.get((market,a),set())):
+            reasons.append('Überlappende oder widersprüchliche Ergebnisse in der Aufnahme.')
+        owners=[f for f in existing if f['market']==market and set(f['variants'])&set(members)]
+        if owners:
+            if len(owners)==1 and set(owners[0]['variants'])==set(members):
+                unchanged+=1;continue
+            reasons.append('ASINs sind bereits einem anderen Soll zugeordnet. Bitte bestehende Familie bearbeiten.')
+        if reasons:skipped.append({'market':market,'asin':', '.join(members),'reason':' '.join(reasons)});continue
+        # Never overwrite a user-defined family with an identical name.
+        used={f['name'] for f in existing if f['market']==market}|{f['name'] for f in accepted if f['market']==market}
+        base=g['name'];number=2
+        while g['name'] in used:g['name']=base+f' ({number})';number+=1
+        accepted.append({k:g[k] for k in ('name','market','variants')})
+    return {'groups':accepted,'skipped':skipped,'unchanged':unchanged}
+
+
 def snapshot_structure(status,count):
     if status=='Ausstehend':return 'Noch nicht geprüft'
     if status!='Gelesen' or not count:return 'Unklar – keine sichere Aussage zur Variation'
