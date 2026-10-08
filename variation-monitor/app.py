@@ -5,7 +5,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse, parse_qs
-from core import parse_import, parse_manual, evaluate, scan_page, ASIN, MARKETS, parse_family, dimension_key, market_browser_options, parse_snapshot_input, collect_snapshot, SnapshotCancelled, snapshot_workbook
+from core import parse_import, parse_manual, evaluate, scan_page, ASIN, MARKETS, parse_family, dimension_key, market_browser_options, parse_snapshot_input, collect_snapshot, SnapshotCancelled, snapshot_workbook, snapshot_comparison
 
 ROOT=Path(__file__).resolve().parent
 DATA=Path(os.environ.get('LOCALAPPDATA', str(Path.home()))) / 'AmazonVariationMonitor'
@@ -118,6 +118,9 @@ class Handler(BaseHTTPRequestHandler):
                 q={k:v[0] for k,v in parse_qs(urlparse(self.path).query).items()}
                 if path=='/api/snapshots':return self.send({'jobs':snapshot_jobs(),'active':SNAPSHOT_ACTIVE['id']})
                 if path=='/api/snapshot/template':return self.send(('\ufeffASIN;Name\r\n').encode('utf8'),'text/csv; charset=utf-8')
+                if path=='/api/snapshot/comparison':
+                    job,items=snapshot_data(q.get('id'))
+                    return self.send(snapshot_comparison(items,json.loads(job['markets'])))
                 if path=='/api/snapshot/detail':
                     with db() as c:r=c.execute('SELECT * FROM snapshot_items WHERE job_id=? AND market=? AND asin=?',(q.get('id'),q.get('market'),q.get('asin'))).fetchone()
                     if not r:raise ValueError('Ergebnis nicht gefunden.')
@@ -377,14 +380,18 @@ def run_snapshot(ident,visible):
         with LOCK:
             SNAPSHOT_ACTIVE['id']=None;PROGRESS.update(running=False,text='Ist-Aufnahme '+final.lower()+('. '+error if error else '. Ergebnisse und Excel unter „Ist-Zustand“.'))
 
-def snapshot_export(ident,market=''):
+def snapshot_data(ident):
     with db() as c:
         c.execute('BEGIN')
         r=c.execute('SELECT * FROM snapshot_jobs WHERE id=?',(ident,)).fetchone()
         if not r:raise ValueError('Ist-Aufnahme nicht gefunden.')
         job=dict(r);markets=json.loads(job['markets'])
-        if market and market not in markets:raise ValueError('Marktplatz gehört nicht zu dieser Aufnahme.')
         items=[dict(r) for r in c.execute('SELECT * FROM snapshot_items WHERE job_id=? ORDER BY position',(ident,))]
+    return job,items
+
+def snapshot_export(ident,market=''):
+    job,items=snapshot_data(ident);markets=json.loads(job['markets'])
+    if market and market not in markets:raise ValueError('Marktplatz gehört nicht zu dieser Aufnahme.')
     if market:return snapshot_workbook(job,items,market),'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
     output=io.BytesIO()
     with zipfile.ZipFile(output,'w',zipfile.ZIP_DEFLATED) as z:

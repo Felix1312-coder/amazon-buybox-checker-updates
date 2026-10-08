@@ -51,6 +51,9 @@ def main():
    with page.expect_download() as info:page.get_by_role('button',name='Alle Märkte als Excel-Paket ↓').click()
    package=qa/'snapshot-all.zip';info.value.save_as(package)
    with zipfile.ZipFile(package) as z:assert set(z.namelist())=={'Varianten-Ist-IT.xlsx','Varianten-Ist-DE.xlsx'}
+   page.locator('#snapViewComparison').click()
+   page.wait_for_function("document.querySelector('#snapCompareTable').innerText.includes('Einheitliche Variation')")
+   assert 'Gruppe A' in page.locator('#snapCompareTable').inner_text()
    page.screenshot(path=str(qa/'snapshot-overview.png'),full_page=True)
    assert app.families()==[]
    browser.close()

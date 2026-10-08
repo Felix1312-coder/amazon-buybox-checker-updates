@@ -68,7 +68,7 @@ class SnapshotStorageTests(unittest.TestCase):
    self.assertEqual(set(z.namelist()),{'Varianten-Ist-IT.xlsx','Varianten-Ist-DE.xlsx'})
    for market in ('IT','DE'):
     w=load_workbook(io.BytesIO(z.read('Varianten-Ist-'+market+'.xlsx')))
-    self.assertEqual(w.sheetnames,['Übersicht','Varianten'])
+    self.assertEqual(w.sheetnames,['Variationsgruppen','Ländervergleich','Übersicht','Varianten'])
     self.assertEqual(w['Varianten'].max_row,3) # same family from two input ASINs deduplicates
     self.assertEqual(w['Varianten']['C2'].value,market)
     self.assertEqual(w['Varianten']['B2'].value,A+', '+B)
@@ -97,3 +97,33 @@ class SnapshotStorageTests(unittest.TestCase):
   with self.assertRaisesRegex(ValueError,'laufende'):self.create()
   with self.assertRaises(ValueError):app.snapshot_export(ident,'UK')
   page=app.snapshot_page({'id':ident,'market':'DE','q':B});self.assertEqual(page['count'],1)
+
+class ComparisonExportTests(unittest.TestCase):
+ def item(self,market,members,status='Gelesen',name='Gartenlampe'):
+  return {'market':market,'asin':A,'name':name,'status':status,'result':{'asins':members,'variants':[{'asin':a,'title':'Lampe '+a,'attributes':{'color':'Gelb' if market=='DE' else 'Giallo'},'status':status,'url':'https://www.amazon.it/dp/'+a} for a in members]},'note':''}
+ def test_same_members_ignore_language_and_order(self):
+  from core import snapshot_comparison
+  r=snapshot_comparison([self.item('DE',[A,B]),self.item('IT',[B,A])],['DE','IT'])['rows'][0]
+  self.assertEqual(r['verdict'],'Einheitliche Variation');self.assertIn('DE / IT',r['same'])
+ def test_same_count_different_members_and_no_variation(self):
+  from core import snapshot_comparison
+  r=snapshot_comparison([self.item('DE',[A,B]),self.item('IT',[A,C]),self.item('FR',[A])],['DE','IT','FR'])['rows'][0]
+  self.assertEqual(r['verdict'],'Abweichend');self.assertIn('Keine Variation erkannt',r['markets']['FR']['label'])
+  self.assertIn('Gruppe B',r['markets']['IT']['label'])
+ def test_partial_and_missing_never_uniform(self):
+  from core import snapshot_comparison
+  r=snapshot_comparison([self.item('DE',[A,B]),self.item('IT',[A,B],'Teilweise')],['DE','IT','FR'])['rows'][0]
+  self.assertEqual(r['verdict'],'Noch nicht sicher vergleichbar');self.assertEqual(r['unknown'],'IT, FR')
+ def test_horizontal_product_cards_and_old_json_records(self):
+  from openpyxl import load_workbook
+  a=self.item('IT',[A,B],name='=FORMULA()');a['result']=json.dumps(a['result'])
+  b={**self.item('IT',[B,A]),'asin':B}
+  w=load_workbook(io.BytesIO(snapshot_workbook({'name':'Old saved run','status':'Abgeschlossen','created':'','markets':'["IT"]'},[a,b],'IT')))
+  sheet=w['Variationsgruppen'];self.assertEqual(sheet.max_row,4)
+  self.assertEqual(sheet['A4'].data_type,'s');self.assertTrue(sheet['G4'].value.startswith('Lampe '));self.assertIn(A,sheet['G4'].value);self.assertIn(B,sheet['H4'].value)
+  self.assertIsNotNone(sheet['G4'].hyperlink);self.assertEqual(w.active.title,'Variationsgruppen');w.close()
+ def test_singletons_and_no_data(self):
+  from core import snapshot_comparison
+  r=snapshot_comparison([self.item('DE',[A]),self.item('IT',[A])],['DE','IT'])['rows'][0]
+  self.assertEqual(r['verdict'],'Einheitlich ohne Variation')
+  self.assertEqual(snapshot_comparison([],['IT'])['rows'],[])
