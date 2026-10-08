@@ -1,8 +1,8 @@
 import re, json, csv, io, unicodedata
 from collections import defaultdict
 
-MARKETS = {'DE':'de','FR':'fr','IT':'it','ES':'es','UK':'co.uk','NL':'nl','PL':'pl','SE':'se','BE':'com.be','AE':'ae'}
-MARKET_LOCALES={'DE':'de-DE','FR':'fr-FR','IT':'it-IT','ES':'es-ES','UK':'en-GB','NL':'nl-NL','PL':'pl-PL','SE':'sv-SE','BE':'fr-BE','AE':'en-AE'}
+MARKETS = {'DE':'de','FR':'fr','IT':'it','ES':'es','UK':'co.uk','IE':'ie','NL':'nl','PL':'pl','SE':'se','BE':'com.be','AE':'ae'}
+MARKET_LOCALES={'DE':'de-DE','FR':'fr-FR','IT':'it-IT','ES':'es-ES','UK':'en-GB','IE':'en-IE','NL':'nl-NL','PL':'pl-PL','SE':'sv-SE','BE':'fr-BE','AE':'en-AE'}
 
 def market_browser_options(market):
     locale=MARKET_LOCALES[market]
@@ -382,7 +382,7 @@ def snapshot_comparison(items,markets):
     for row in seeds.values():
         signatures={};unknown=[]
         for market in markets:
-            cell=row['markets'].setdefault(market,{'asins':[],'complete':False,'status':'Ausstehend','variants':[]})
+            cell=row['markets'].setdefault(market,{'asins':[],'complete':False,'status':'Nicht in Länderliste','variants':[]})
             if cell['complete']:
                 key=tuple(cell['asins']);code=signatures.setdefault(key,chr(65+len(signatures)))
                 cell['label']=('Variation' if len(key)>1 else 'Keine Variation erkannt')+f' · {len(key)} ASIN'+('s' if len(key)>1 else '')+f' · Gruppe {code}'

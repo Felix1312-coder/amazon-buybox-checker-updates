@@ -155,11 +155,14 @@ class Handler(BaseHTTPRequestHandler):
         if self.headers.get('X-Token')!=TOKEN: return self.send({'error':'Zugriff abgelehnt'},code=403)
         try:
             size=int(self.headers.get('Content-Length','0'))
-            if size>8_000_000: raise ValueError('Datei zu groß (max. ca. 5 MB).')
+            if size>22_000_000: raise ValueError('Upload zu groß (max. 5 MB je Datei).')
             d=json.loads(self.rfile.read(size)); path=urlparse(self.path).path
             if path=='/api/snapshot/preview':
                 parsed=snapshot_input(d)
                 return self.send({'count':len(parsed['seeds']),'duplicates':parsed['duplicates'],'preview':parsed['seeds'][:12]})
+            if path=='/api/snapshot/extend':
+                added=extend_snapshot(d)
+                return self.send({'message':f'{added} neue Prüfungen ergänzt. Vorhandene Ergebnisse bleiben erhalten.','added':added})
             if path=='/api/snapshot/start':
                 ident=start_snapshot(d)
                 return self.send({'id':ident,'message':'Ist-Aufnahme gestartet.'})
@@ -298,11 +301,39 @@ def snapshot_page(q):
         rows=c.execute('SELECT job_id,market,asin,name,status,at,note,found FROM snapshot_items WHERE '+where+' ORDER BY position LIMIT 50 OFFSET ?',[*args,(page-1)*50]).fetchall()
     return {'rows':[dict(r) for r in rows],'count':count,'page':page,'pages':max(1,(count+49)//50)}
 
+def snapshot_extra_lists(d):
+    extra=d.get('market_lists') or {}
+    if not isinstance(extra,dict) or any(m not in ('UK','IE') for m in extra):raise ValueError('Eigene Länderlisten sind für UK und IE möglich.')
+    return {m:snapshot_input(value) for m,value in extra.items()}
+
+def extend_snapshot(d):
+    extra=snapshot_extra_lists(d)
+    if not extra:raise ValueError('Bitte zuerst eine UK- oder IE-Liste hochladen.')
+    ident=d.get('id');added=0
+    with LOCK:
+        if PROGRESS['running']:raise ValueError('Bitte den laufenden Scan fertig laufen lassen oder stoppen. Danach Länderlisten ergänzen.')
+        with db() as c:
+            c.execute('BEGIN IMMEDIATE')
+            job=c.execute('SELECT * FROM snapshot_jobs WHERE id=?',(ident,)).fetchone()
+            if not job:raise ValueError('Aufnahme nicht gefunden.')
+            markets=json.loads(job['markets'])
+            position=c.execute('SELECT COALESCE(MAX(position),-1)+1 FROM snapshot_items WHERE job_id=?',(ident,)).fetchone()[0]
+            for market,parsed in extra.items():
+                if market not in markets:markets.append(market)
+                for seed in parsed['seeds']:
+                    cursor=c.execute('INSERT OR IGNORE INTO snapshot_items VALUES(?,?,?,?,?,?,?,?,?,?)',(ident,market,seed['asin'],seed['name'],position,'Ausstehend','','',None,None))
+                    if cursor.rowcount:added+=1;position+=1
+            if added:c.execute("UPDATE snapshot_jobs SET markets=?,status='Ergänzt – offene Prüfungen',finished='',error='' WHERE id=?",(json.dumps(markets),ident))
+    return added
+
 def start_snapshot(d,resume_id=None):
     if resume_id is None:
-        parsed=snapshot_input(d);markets=d.get('markets')
+        parsed=snapshot_input(d) if d.get('data') or d.get('text') else {'seeds':[]}
+        extras=snapshot_extra_lists(d);markets=d.get('markets')
         if not isinstance(markets,list) or not markets or any(m not in MARKETS for m in markets):raise ValueError('Bitte mindestens einen gültigen Marktplatz auswählen.')
         markets=list(dict.fromkeys(markets));ident=uuid.uuid4().hex
+        inputs={m:extras.get(m,parsed)['seeds'] for m in markets}
+        if any(not seeds for seeds in inputs.values()):raise ValueError('Für jeden ausgewählten Markt eine Hauptliste oder eigene Länderliste hochladen.')
         name=str(d.get('name') or d.get('filename') or 'Ist-Aufnahme').strip()[:200]
     else:ident=str(resume_id)
     with LOCK:
@@ -313,7 +344,7 @@ def start_snapshot(d,resume_id=None):
                 c.execute('INSERT INTO snapshot_jobs VALUES(?,?,?,?,?,?,?)',(ident,name,now,'','Läuft',json.dumps(markets),''))
                 position=0
                 for market in markets:
-                    for seed in parsed['seeds']:
+                    for seed in inputs[market]:
                         c.execute('INSERT INTO snapshot_items VALUES(?,?,?,?,?,?,?,?,?,?)',(ident,market,seed['asin'],seed['name'],position,'Ausstehend','','',None,None));position+=1
             else:
                 if not c.execute('SELECT 1 FROM snapshot_jobs WHERE id=?',(ident,)).fetchone():raise ValueError('Aufnahme nicht gefunden.')

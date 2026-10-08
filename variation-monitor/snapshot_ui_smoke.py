@@ -55,6 +55,16 @@ def main():
    page.wait_for_function("document.querySelector('#snapCompareTable').innerText.includes('Einheitliche Variation')")
    assert 'Gruppe A' in page.locator('#snapCompareTable').inner_text()
    page.screenshot(path=str(qa/'snapshot-overview.png'),full_page=True)
+   page.locator('#snapUKFile').set_input_files({'name':'UK.csv','mimeType':'text/csv','buffer':f'ASIN;Name\n{A};UK Product'.encode()})
+   page.wait_for_function("document.querySelector('#snapUKPreview').innerText.includes('1 ASINs')")
+   page.locator('#snapIEFile').set_input_files({'name':'IE.csv','mimeType':'text/csv','buffer':f'ASIN;Name\n{B};IE Product'.encode()})
+   page.wait_for_function("document.querySelector('#snapIEPreview').innerText.includes('1 ASINs')")
+   assert '2 eindeutige ASINs' in page.locator('#snapPreview').inner_text()
+   page.get_by_role('button',name='UK-/IE-Listen zu dieser Aufnahme hinzufügen',exact=True).click()
+   page.wait_for_function("document.querySelector('#snapJobStatus').innerText.includes('4 / 6')")
+   job=app.snapshot_jobs()[0];_,items=app.snapshot_data(job['id'])
+   assert len(items)==6 and sum(i['status']=='Gelesen' for i in items)==4
+   assert [(i['market'],i['asin']) for i in items[-2:]]==[('UK',A),('IE',B)]
    assert app.families()==[]
    browser.close()
   (qa/'snapshot-qa.json').write_text(json.dumps({'ok':True,'checks':['CSV upload and preview','Selected IT + DE Cartesian product','No selection disables start','Live progress and persisted results','Child ASIN style/color/size display','Filter does not limit export','One XLSX per market','ZIP contains both markets','Deduplicated family export','No Soll modifications']},indent=2))

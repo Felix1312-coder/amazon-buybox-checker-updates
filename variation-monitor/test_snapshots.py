@@ -127,3 +127,31 @@ class ComparisonExportTests(unittest.TestCase):
   r=snapshot_comparison([self.item('DE',[A]),self.item('IT',[A])],['DE','IT'])['rows'][0]
   self.assertEqual(r['verdict'],'Einheitlich ohne Variation')
   self.assertEqual(snapshot_comparison([],['IT'])['rows'],[])
+
+class CountryListTests(SnapshotStorageTests):
+ def upload(self,asin,name='Country product'):
+  return {'filename':'country.csv','data':base64.b64encode(f'ASIN;Name\n{asin};{name}'.encode()).decode()}
+ def test_country_lists_scoped_to_their_market(self):
+  with patch.object(app.threading,'Thread'):
+   ident=app.start_snapshot({**self.upload(A),'markets':['DE','UK','IE'],'market_lists':{'UK':self.upload(B),'IE':self.upload(C)}})
+  _,items=app.snapshot_data(ident)
+  self.assertEqual([(i['market'],i['asin']) for i in items],[('DE',A),('UK',B),('IE',C)])
+ def test_append_preserves_completed_results_and_only_scans_new(self):
+  ident=self.create(['IT','UK'])
+  app.snapshot_process(ident,lambda m:m,lambda p,m,a:observation(a,m,members=[a]))
+  _,before=app.snapshot_data(ident);app.PROGRESS['running']=False
+  self.assertEqual(app.extend_snapshot({'id':ident,'market_lists':{'UK':self.upload(A,'Changed name'),'IE':self.upload(C)}}),1)
+  _,after=app.snapshot_data(ident);self.assertEqual(after[:len(before)],before)
+  self.assertEqual(app.extend_snapshot({'id':ident,'market_lists':{'IE':self.upload(C)}}),0)
+  calls=[];app.snapshot_process(ident,lambda m:m,lambda p,m,a:(calls.append((m,a)) or observation(a,m,members=[a])))
+  self.assertEqual(calls,[('IE',C)])
+  package,_=app.snapshot_export(ident)
+  with zipfile.ZipFile(io.BytesIO(package)) as z:self.assertIn('Varianten-Ist-IE.xlsx',z.namelist())
+ def test_append_blocked_during_scan_and_invalid_market(self):
+  ident=self.create()
+  with self.assertRaisesRegex(ValueError,'laufenden'):app.extend_snapshot({'id':ident,'market_lists':{'UK':self.upload(C)}})
+  app.PROGRESS['running']=False
+  with self.assertRaises(ValueError):app.extend_snapshot({'id':ident,'market_lists':{'DE':self.upload(C)}})
+ def test_ireland_url_and_locale(self):
+  from core import market_product_url,market_browser_options
+  self.assertIn('www.amazon.ie/dp/',market_product_url('IE',A));self.assertEqual(market_browser_options('IE')['locale'],'en-IE')
