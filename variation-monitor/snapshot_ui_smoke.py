@@ -105,10 +105,22 @@ def main():
    result={'status':'Abweichung','partial':False,'details':[{'asin':A,'type':'abweichung','missing':[B],'extra':[],'changes':[],'text':'Verknüpfung fehlt.'}]}
    with app.db() as c:c.execute('INSERT INTO checks(family_id,name,market,at,result,observations,expected) VALUES(?,?,?,?,?,?,?)',(family['id'],family['name'],family['market'],'2026-10-08T15:00:00+02:00',json.dumps(result),json.dumps({a:{'valid':True,'asins':[a],'title':'Product '+a,'attributes':{a:{}}} for a in family['variants']}),json.dumps(family['variants'])))
    page.locator('#nav-deviations').click()
-   page.wait_for_function("document.querySelector('#deviationTable').innerText.includes('So soll es sein')")
+   page.wait_for_function("document.querySelector('#deviationTable').innerText.includes('1 Produkt fehlt')")
+   assert not page.locator('.deviation-row').first.get_attribute('open')
+   assert page.locator('.deviation-row').first.bounding_box()['height']<150
+   assert page.evaluate("shortProduct('Beurer BR10 Insektenstichheiler')")=='BR 10'
+   assert page.evaluate("shortProduct('Beurer EM 49 Digital TENS')")=='EM 49'
+   assert page.evaluate("shortProduct('Beurer IH 60 Yearpack Accessori')")=='IH 60 · Zubehör'
+   assert page.evaluate("shortProduct('Beurer SR IH 1 Aerosol')")=='SR IH 1'
+   assert page.evaluate("problemSummary({details:[{extra:['B000000003']},{extra:['B000000003']},{extra:['B000000003']}]})")==['1 Produkt zusätzlich']
+   page.locator('.deviation-row > summary').first.click()
+   page.wait_for_timeout(2800)
+   assert page.locator('.deviation-content').first.is_visible()
    assert B in page.locator('#deviationTable').inner_text()
    assert 'Fehlende Verknüpfungen' in page.locator('#deviationTable').inner_text()
+   page.locator('.deviation-row > summary').first.click()
    page.screenshot(path=str(qa/'snapshot-overview.png'),full_page=True)
+   page.locator('.deviation-row > summary').first.click()
    page.locator('#nav-families').click()
    assert page.locator('#familytable').is_visible()
    app.PROGRESS.update(running=True,text='Stop fixture');app.CHECK_STOP.clear()
