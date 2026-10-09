@@ -25,7 +25,9 @@ class AcceptDeviationTests(SnapshotStorageTests):
   self.assertIn(C,plan['groups'][0]['variants']);self.assertTrue(plan['notes'])
  def test_unclear_and_overlap_rejected(self):
   self.prepare({A:observation(A,members=[A,B]),B:observation(B,members=[B])})
-  with self.assertRaisesRegex(ValueError,'überlappende'):app.accept_deviation({'id':'existing'})
+  with self.assertRaisesRegex(ValueError,'vollständig'):app.accept_deviation({'id':'existing'})
+  with self.assertRaisesRegex(ValueError,'überlappende'):
+   accepted_deviation_groups(app.families()[0],{A:observation(A,members=[A,B]),B:observation(B,members=[B])},app.families())
   with app.db() as c:c.execute('UPDATE checks SET result=?',(json.dumps({'status':'Abweichung','partial':True}),))
   with self.assertRaisesRegex(ValueError,'vollständig'):app.accept_deviation({'id':'existing'})
  def test_other_family_conflict_and_stale_preview(self):
@@ -38,3 +40,4 @@ class AcceptDeviationTests(SnapshotStorageTests):
   expected={A:{'label':'Product','attributes':{'style':'Old'}}}
   self.prepare({A:observation(A,members=[A])},expected)
   plan=app.accept_deviation({'id':'existing'});self.assertEqual(plan['groups'][0]['variants'][A]['attributes'],{'style':'Classico'})
+

@@ -77,7 +77,7 @@ def run(items, visible):
                             o=scan_page(page,f['market'],asin)
                             if CHECK_STOP.is_set():break
                             provisional=evaluate(f['variants'],{asin:o})
-                            if not CHECK_STOP.is_set() and (o.get('error') or o.get('language_error') or any(d['type']=='abweichung' for d in provisional['details'])):
+                            if not CHECK_STOP.is_set() and (o.get('error') or o.get('language_error') or any(d['type']=='abweichung' or d.get('suspected_missing') for d in provisional['details'])):
                                 page.wait_for_timeout(2000)
                                 if CHECK_STOP.is_set():break
                                 second=scan_page(page,f['market'],asin)
@@ -536,4 +536,5 @@ if __name__=='__main__':
         tk.Button(root,text='App erneut öffnen',command=lambda:webbrowser.open(url)).pack()
         root.mainloop()
     finally:server.shutdown()
+
 

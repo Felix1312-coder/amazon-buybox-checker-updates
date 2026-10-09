@@ -84,11 +84,23 @@ def embedded_asins(scripts):
 def evaluate(expected, observations):
     expected_map=expected if isinstance(expected,dict) else {}
     expected = set(expected); details=[]; uncertain=False; deviations=False
+    # A missing link is not a confirmed split when another PDP still shows
+    # both products together. Never turn asymmetric evidence into a green OK.
+    readable={a:set(o.get('asins',[])) for a,o in observations.items()
+              if o.get('valid') and not o.get('error') and a in o.get('asins',[])}
     for asin in sorted(expected):
         o = observations.get(asin,{})
-        if o.get('error') or not o.get('valid'):
+        if o.get('error') or not o.get('valid') or asin not in readable:
             uncertain=True; details.append({'asin':asin,'type':'unklar','text':o.get('error') or 'Keine verwertbaren Variantendaten.'}); continue
         seen = set(o.get('asins',[])); missing = expected-seen; extra = seen-expected
+        unresolved={other for other in missing if other not in readable or
+                    any(asin in members and other in members for members in readable.values())}
+        if unresolved:
+            uncertain=True
+            details.append({'asin':asin,'type':'unklar','suspected_missing':sorted(unresolved),
+                'text':'Verknüpfung nicht eindeutig: '+', '.join(sorted(unresolved))+
+                '. Andere Produktseiten zeigen die Verbindung noch oder die Gegenprüfung ist unvollständig. Kein bestätigtes fehlendes Produkt; bitte erneut prüfen.'})
+            missing-=unresolved
         changes=[]; unknown=[]
         actual=o.get('attributes',{}).get(asin,{})
         language_issue=o.get('language_error') if expected_attributes(expected_map.get(asin)) else ''
@@ -105,6 +117,8 @@ def evaluate(expected, observations):
         if missing or extra or changes:
             deviations=True
             details.append({'asin':asin,'type':'abweichung','missing':sorted(missing),'extra':sorted(extra),'changes':changes,'text':'Verknüpfung oder Merkmalswert weicht vom Soll ab.'})
+        elif unresolved:
+            pass  # The uncertain link above must not also receive an OK detail.
         elif unknown:
             uncertain=True; details.append({'asin':asin,'type':'unklar','text':'Soll-Merkmale nicht auslesbar: '+', '.join(unknown)})
         else: details.append({'asin':asin,'type':'ok','text':'Alle erwarteten Varianten gefunden.'})
@@ -618,3 +632,4 @@ def snapshot_workbook(job,items,market):
     wb._sheets=[grouped,wb['Ländervergleich'],summary,sheet]
     wb.active=0
     result=io.BytesIO();wb.save(result);wb.close();return result.getvalue()
+
