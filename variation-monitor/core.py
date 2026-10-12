@@ -160,9 +160,34 @@ EXTRACT = r'''() => {
    labels:scopes.map(x=>x.innerText.trim()).filter(Boolean)};
 }'''
 
+def navigate_product(page, url):
+    """Retry transient navigation failures once, using the existing tab.
+
+    Exceptions previously bypassed the caller's observation-based retry.
+    Never inspect a stale page after a failed navigation.
+    """
+    for attempt in range(2):
+        try:
+            page.goto(url, wait_until='domcontentloaded', timeout=35000)
+            return
+        except Exception as exc:
+            message=str(exc)
+            network=re.search(r'net::(ERR_[A-Z_]+)',message)
+            timeout='timeout' in message.casefold() or type(exc).__name__=='TimeoutError'
+            if not network and not timeout:
+                raise
+            if attempt:
+                reason=network.group(1) if network else 'Zeitüberschreitung'
+                raise RuntimeError('Amazon-Seite nach 2 Ladeversuchen nicht erreichbar ('+reason+
+                    '). Variation konnte nicht geprüft werden. Bitte später erneut prüfen.') from exc
+            # Cancel the failed document load before retrying the exact market URL.
+            try:page.goto('about:blank',wait_until='commit',timeout=5000)
+            except Exception:pass
+            page.wait_for_timeout(2000)
+
 def scan_page(page, market, asin):
     url = market_product_url(market,asin)
-    page.goto(url, wait_until='domcontentloaded', timeout=35000)
+    navigate_product(page,url)
     for selector in ['#sp-cc-accept', 'input[name="accept"]']:
         try:
             if page.locator(selector).count(): page.locator(selector).first.click(timeout=1500)
