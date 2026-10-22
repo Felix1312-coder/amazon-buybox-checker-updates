@@ -1,7 +1,7 @@
 {
   "app_id": "amazon-variation-monitor",
-  "version": "0.5.9",
+  "version": "0.5.10",
   "launcher_protocol": 1,
-  "url": "https://raw.githubusercontent.com/Felix1312-coder/amazon-buybox-checker-updates/variation-monitor-updates/variation-monitor-0.5.9.zip",
-  "sha256": "12da107d3b37a3e6c28c6f1fcbe6a23011e022cfdb754ea99d8cdf13a67d2ea3"
+  "url": "https://raw.githubusercontent.com/Felix1312-coder/amazon-buybox-checker-updates/variation-monitor-updates/variation-monitor-0.5.10.zip",
+  "sha256": "40610da169748c19874007b406b97648a153a23d297fffb4414d8b800678d626"
 }
