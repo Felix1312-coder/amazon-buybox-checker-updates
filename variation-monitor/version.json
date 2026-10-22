@@ -1,10 +1,10 @@
 {
   "app_id": "amazon-variation-monitor",
-  "version": "0.5.10",
+  "version": "0.5.11",
   "launcher_protocol": 1,
   "files": {
-    "app.py": "e7afd7b8d914c4777905d82bea44337ed2b3bb6ee2a17d5d5026f4b7211ab2c8",
-    "core.py": "b3fadc3382d6b0ef8266c3a317e67d70c0f196143a8c417cd8eb26387d1bc769",
+    "app.py": "39f7f9e3bae1f81f13661c1f21bd43cff3807d9582c614430db8c5f2bb5aff2f",
+    "core.py": "0a2d076a9d488abe6d06b1b1df2b24bd9838d727c53ba7ab6237f5b7ec5f9ad2",
     "selftest.py": "0be83a38a768502911cc9914d82145c0152384b9eedde940e7afc29025ab1dc0",
     "templates.bundle.b64": "6ed3f839687dbd1a2456a792ec1cd7f08ce6b56a3c716aadf81e8fe95058f020",
     "ui.html": "8722f7a4ef97bd8bf307170c855c62cf38594ecb2e1f8bf925392cdee2cfaac2",

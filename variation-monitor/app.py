@@ -142,7 +142,7 @@ class Handler(BaseHTTPRequestHandler):
                     with db() as c:r=c.execute('SELECT * FROM snapshot_items WHERE job_id=? AND market=? AND asin=?',(q.get('id'),q.get('market'),q.get('asin'))).fetchone()
                     if not r:raise ValueError('Ergebnis nicht gefunden.')
                     item=dict(r);item['result']=json.loads(item['result']) if item['result'] else None
-                    item['structure']=snapshot_structure(item['status'],len(set((item['result'] or {}).get('asins') or [])))
+                    item['structure']=snapshot_structure(item['status'],len(set((item['result'] or {}).get('asins') or [])),item.get('note',''))
                     return self.send(item)
                 if path=='/api/snapshot/export':
                     content,kind=snapshot_export(q.get('id'),q.get('market',''),q.get('format',''))
@@ -352,7 +352,7 @@ def snapshot_page(q):
         if search:where+=' AND (instr(lower(asin),lower(?))>0 OR instr(lower(name),lower(?))>0)';args.extend([search,search])
         count=c.execute('SELECT COUNT(*) FROM snapshot_items WHERE '+where,args).fetchone()[0]
         rows=c.execute('SELECT job_id,market,asin,name,status,at,note,found FROM snapshot_items WHERE '+where+' ORDER BY position LIMIT 50 OFFSET ?',[*args,(page-1)*50]).fetchall()
-    return {'rows':[{**dict(r),'structure':snapshot_structure(r['status'],r['found'])} for r in rows],'count':count,'page':page,'pages':max(1,(count+49)//50)}
+    return {'rows':[{**dict(r),'structure':snapshot_structure(r['status'],r['found'],r['note'])} for r in rows],'count':count,'page':page,'pages':max(1,(count+49)//50)}
 
 def adopt_snapshot(d):
     with LOCK:

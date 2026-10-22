@@ -29,6 +29,18 @@ def main():
     assert requests[-1].startswith(locale)
     assert len(browser.contexts)==1 and len(shared.context.pages)==1
    shared.context.close()
+   # Actual DOM extraction: complete singleton and a twister appearing late.
+   fixture=browser.new_page()
+   html='<html lang="de-DE"><body><div id="ppd"><span id="productTitle">Beurer IL 11 Infrarotlampe</span><input id="ASIN" value="'+A+'"><img id="landingImage"><div id="availability">Auf Lager</div><div id="twister_feature_div"></div></div></body></html>'
+   fixture.route('**/*',lambda route:route.fulfill(status=200,content_type='text/html',body=html))
+   result=app.scan_page(fixture,'DE',A)
+   assert result['valid'] and result['standalone_confirmed']
+   fixture.unroute('**/*')
+   late=html.replace('</body>', '<script>setTimeout(()=>{document.querySelector("#twister_feature_div").innerHTML='+json.dumps('<span data-asin="'+A+'"></span><span data-asin="'+B+'"></span>')+'},2000)</script></body>')
+   fixture.route('**/*',lambda route:route.fulfill(status=200,content_type='text/html',body=late))
+   result=app.scan_page(fixture,'DE',A)
+   assert result['valid'] and not result['standalone_confirmed'] and set(result['asins'])=={A,B}
+   fixture.close()
    page=browser.new_page(viewport={'width':1500,'height':1100},accept_downloads=True)
    page.goto(f'http://127.0.0.1:{server.server_port}')
    page.locator('#nav-snapshots').click()
