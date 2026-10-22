@@ -154,7 +154,11 @@ EXTRACT = r'''() => {
    for (const a of ['data-asin','data-defaultasin']) {const s=el.getAttribute(a)||''; if(/^[A-Z0-9]{10}$/.test(s))ids.add(s);}
    for (const a of ['data-dp-url','href','value']) {const m=(el.getAttribute(a)||'').match(/\/(?:dp|gp\/product)\/([A-Z0-9]{10})/); if(m)ids.add(m[1]);}
  }
- return {page_complete:document.readyState==='complete' && !!document.querySelector('#landingImage, #imgTagWrapperId img') && !!document.querySelector('#dp-container, #ppd') && !!document.querySelector('#buybox, #desktop_buybox, #availability'),
+ const ratingRoot=document.querySelector('#averageCustomerReviews, #averageCustomerReviews_feature_div');
+ const starEl=ratingRoot?.querySelector('#acrPopover, .a-icon-alt') || document.querySelector('#acrPopover');
+ const countEl=ratingRoot?.querySelector('#acrCustomerReviewText') || document.querySelector('#acrCustomerReviewText');
+ return {rating_text:starEl?.getAttribute('title') || starEl?.getAttribute('aria-label') || starEl?.textContent.trim() || '', rating_count_text:countEl?.textContent.trim() || '',
+   page_complete:document.readyState==='complete' && !!document.querySelector('#landingImage, #imgTagWrapperId img') && !!document.querySelector('#dp-container, #ppd') && !!document.querySelector('#buybox, #desktop_buybox, #availability'),
    variant_controls:scopes.some(root=>!!root.querySelector('li, select, button, a, [data-asin], [data-defaultasin], [aria-expanded], [role="button"]')),
    html_language:document.documentElement.lang||'', nav_language:document.querySelector('#icp-nav-flyout .icp-nav-link-inner')?.innerText.trim()||'', title:document.querySelector('#productTitle')?.textContent.trim()||'', current:document.querySelector('input#ASIN')?.value||'',
    attributes, dimensions, asins:[...ids], scripts:[...document.scripts].map(s=>s.textContent).filter(s=>/asinVariationValues|dimensionToAsinMap|variationValues|dimensionValuesDisplayData/.test(s)),
@@ -186,6 +190,25 @@ def navigate_product(page, url):
             try:page.goto('about:blank',wait_until='commit',timeout=5000)
             except Exception:pass
             page.wait_for_timeout(2000)
+
+def parse_rating(raw):
+    text=str(raw.get('rating_text') or '').strip()
+    count_text=str(raw.get('rating_count_text') or '').strip()
+    match=re.search(r'(?<!\d)([0-5](?:[.,]\d+)?)(?!\d)',text)
+    stars=float(match.group(1).replace(',','.')) if match else None
+    if stars is not None and not 0<=stars<=5:stars=None
+    number=re.search(r'\d+(?:[.,\s\u00a0\u202f]\d+)*',count_text)
+    count=None
+    if number and not re.match(r'\s*[kKmM]\b',count_text[number.end():]):
+        token=number.group()
+        # Accept integers or groups of exactly three: do not invent exact counts from 9.4K.
+        if re.fullmatch(r'\d+|\d{1,3}(?:[.,\s\u00a0\u202f]\d{3})+',token):
+            count=int(re.sub(r'\D','',token))
+    return {'stars':stars,'count':count,'raw_stars':text,'raw_count':count_text}
+
+def rating_text(rating):
+    rating=rating or {};stars=rating.get('stars');count=rating.get('count')
+    return (str(stars).replace('.',',')+' ★' if stars is not None else 'Sterne nicht erfasst')+' · '+(f'{count:,}'.replace(',','.')+' Bewertungen' if count is not None else 'Anzahl nicht erfasst')
 
 def standalone_candidate(raw,asin):
     if not raw.get('page_complete') or raw.get('variant_controls',True) or raw.get('blocked') or not raw.get('title') or raw.get('current')!=asin:
@@ -230,7 +253,7 @@ def scan_page(page, market, asin):
     dimensions=sorted(set(parsed['dimensions']) | {dimension_key(k) for k in raw.get('dimensions',[])})
     # No variants may mean a split OR an unsupported page: never assume a split.
     valid = reliable or len(raw['asins']) >= 2 or standalone
-    return {**result,'valid':valid,'standalone_confirmed':standalone,'asins':sorted(ids),'attributes':attributes,'dimensions':dimensions,'source':'Vollständig geladene Produktseite ohne Variantenauswahl (zweimal geprüft)' if standalone else ('Seitendaten + Variantenauswahl' if reliable else 'Variantenauswahl'),
+    return {**result,'rating':parse_rating(raw),'valid':valid,'standalone_confirmed':standalone,'asins':sorted(ids),'attributes':attributes,'dimensions':dimensions,'source':'Vollständig geladene Produktseite ohne Variantenauswahl (zweimal geprüft)' if standalone else ('Seitendaten + Variantenauswahl' if reliable else 'Variantenauswahl'),
       **({} if valid else {'error':'Keine sichere Variantenstruktur auslesbar; mögliche Trennung bitte manuell prüfen.'})}
 
 DIMENSION_NAMES={'color':'Farbe','style':'Stil','size':'Größe','pattern':'Muster','material':'Material','flavor':'Geschmack','scent':'Duft','quantity':'Menge'}
@@ -407,7 +430,7 @@ def collect_snapshot(seed,market,read,cancelled=lambda:False,max_members=500):
         singleton=not issue and set(o.get('asins',[]))=={asin}
         status='Gelesen' if singleton else ('Unklar' if issue or language else ('Gelesen' if attributes else 'Teilweise'))
         note='' if singleton else (issue or language or ('' if attributes else 'Merkmalswerte nicht auslesbar.'))
-        variants.append({'asin':asin,'title':o.get('title',''),'attributes':attributes,'status':status,'note':note,'at':o.get('at',''),'url':o.get('url') or market_product_url(market,asin)})
+        variants.append({'asin':asin,'title':o.get('title',''),'attributes':attributes,'rating':o.get('rating',{}) if not issue else {},'status':status,'note':note,'at':o.get('at',''),'url':o.get('url') or market_product_url(market,asin)})
         if not issue:
             linked={a for a in o.get('asins',[]) if isinstance(a,str) and ASIN.fullmatch(a)}
             known.update(linked)
@@ -600,7 +623,8 @@ def add_comparison_sheet(wb,items,markets):
             c=r['markets'][m]
             label=c['label'] if c['complete'] else (UNREACHABLE if c['status']==UNREACHABLE else c['status'])
             names=list(dict.fromkeys(short_product(v.get('title') or v['asin']) for v in c['variants']))
-            cells.append(label+('\n'+' · '.join(names) if c['complete'] else ''))
+            rating=next((v.get('rating',{}) for v in c['variants'] if v['asin']==r['asin']),{})
+            cells.append(label+('\n'+rating_text(rating)+'\n'+' · '.join(names) if c['complete'] else ''))
         rows.append([short_product(r['name']) or r['asin'],r['asin'],r['verdict'],r['same'],r['unknown'],*cells])
     ws=add_report_sheet(wb,'Ländervergleich',['Produkt','Eingabe-ASIN','Ergebnis','Gleiche Zusammensetzung','Unklare / offene Länder',*markets],rows,[24,18,27,28,20]+[30]*len(markets),'Pro Zeile: gleiche Gruppe = dieselben ASINs. Einzelprodukt = keine Variation. Nicht erreichbare Seiten sind nicht als Einzelprodukt gewertet. Vollständige Titel, ASINs und Prüfhintergrund stehen in den Zellnotizen und Länderblättern.')
     for number,r in enumerate(comparison['rows'],4):
@@ -669,16 +693,17 @@ def snapshot_workbook(job,items,market):
     safe_append(summary,['Ist-Aufnahme',job['name'],'Marktplatz',market])
     safe_append(summary,['Stand des Laufs',job['status'],'Erstellt',job['created']])
     safe_append(summary,['Momentaufnahme der auslesbaren Amazon-Varianten. „Gelesen“ bedeutet nicht fachlich korrekt. Unvollständige Seiten und offene Prüfungen sind gekennzeichnet.'])
-    safe_append(summary,['Zeiten entsprechen der lokalen Rechnerzeit. Kolleg:innen bewerten in den beiden letzten Spalten des Blatts Varianten.'])
-    summary_headers=['Eingabe-ASIN','Name aus Liste','Marktplatz','Lesestatus','Gefundene ASINs','Hinweis','Ausgelesen am','Amazon-Link','Variation?']
+    safe_append(summary,['Sterne und Anzahl = Amazon-Anzeige je Produktseite und Land; nicht summiert und nicht zwingend je Variante separat. Leere Rating-Felder = nicht erfasst. Zeiten: lokale Rechnerzeit.'])
+    summary_headers=['Eingabe-ASIN','Name aus Liste','Marktplatz','Lesestatus','Gefundene ASINs','Hinweis','Ausgelesen am','Amazon-Link','Variation?','Sterne (Amazon)','Bewertungen (Amazon)']
     safe_append(summary,summary_headers)
-    headers=['Gruppe','Eingabe-ASINs','Marktplatz','ASIN','Produkttitel','Farbe','Stil','Größe','Weitere Merkmale','Lesestatus','Hinweis','Ausgelesen am','Amazon-Link','Bewertung','Kommentar','Variation?']
+    headers=['Gruppe','Eingabe-ASINs','Marktplatz','ASIN','Produkttitel','Farbe','Stil','Größe','Weitere Merkmale','Lesestatus','Hinweis','Ausgelesen am','Amazon-Link','Bewertung','Kommentar','Variation?','Sterne (Amazon)','Bewertungen (Amazon)']
     safe_append(sheet,headers)
     groups={}
     for item in items:
         if item['market']!=market:continue
         r=json.loads(item['result']) if isinstance(item.get('result'),str) and item['result'] else item.get('result') or {}
-        safe_append(summary,[item['asin'],short_product(item['name'] or next((v.get('title') for v in r.get('variants',[]) if v['asin']==item['asin']),'')),market,display_read_status(item['status'],item.get('note','')),len(r['asins']) if 'asins' in r and r.get('status')!='Unklar' else None,item.get('note',''),date(item.get('at')),market_product_url(market,item['asin']),snapshot_structure(item['status'],len(set(r.get('asins') or [])),item.get('note',''))])
+        seed_rating=next((v.get('rating',{}) for v in r.get('variants',[]) if v['asin']==item['asin']),{})
+        safe_append(summary,[item['asin'],short_product(item['name'] or next((v.get('title') for v in r.get('variants',[]) if v['asin']==item['asin']),'')),market,display_read_status(item['status'],item.get('note','')),len(r['asins']) if 'asins' in r and r.get('status')!='Unklar' else None,item.get('note',''),date(item.get('at')),market_product_url(market,item['asin']),snapshot_structure(item['status'],len(set(r.get('asins') or [])),item.get('note','')),seed_rating.get('stars'),seed_rating.get('count')])
         if not r:continue
         # Deduplicate identical discoveries, never merge different or overlapping sets.
         key=tuple(sorted(set(r.get('asins') or [item['asin']])))
@@ -694,11 +719,11 @@ def snapshot_workbook(job,items,market):
     for number,group in enumerate(groups.values(),1):
         for asin,v in sorted(group['variants'].items()):
             attrs=v['attributes'];note=' '.join(dict.fromkeys([v.get('note',''),*group['notes']])).strip()
-            safe_append(sheet,[f'{market}-{number:03}',', '.join(group['seeds']),market,asin,short_product(v['title']),attrs.get('color',''),attrs.get('style',''),attrs.get('size',''),'; '.join(DIMENSION_NAMES.get(k,k)+': '+str(value) for k,value in attrs.items() if k not in ('color','style','size')),display_read_status(v['status'],v.get('note','')),note,date(v.get('at')),v['url'],'Offen','',snapshot_structure('Gelesen' if all(st=='Gelesen' for st in group['statuses']) else (UNREACHABLE if all(st==UNREACHABLE for st in group['statuses']) else 'Unklar'),len(group['variants']))])
+            safe_append(sheet,[f'{market}-{number:03}',', '.join(group['seeds']),market,asin,short_product(v['title']),attrs.get('color',''),attrs.get('style',''),attrs.get('size',''),'; '.join(DIMENSION_NAMES.get(k,k)+': '+str(value) for k,value in attrs.items() if k not in ('color','style','size')),display_read_status(v['status'],v.get('note','')),note,date(v.get('at')),v['url'],'Offen','',snapshot_structure('Gelesen' if all(st=='Gelesen' for st in group['statuses']) else (UNREACHABLE if all(st==UNREACHABLE for st in group['statuses']) else 'Unklar'),len(group['variants'])),v.get('rating',{}).get('stars'),v.get('rating',{}).get('count')])
             sheet.cell(sheet.max_row,5).comment=Comment(v['title'] or asin,'Variation Monitor')
     validation=DataValidation(type='list',formula1='"Offen,Passt,Bitte ändern,Unklar"');sheet.add_data_validation(validation)
     if sheet.max_row>=2:validation.add(f'N2:N{sheet.max_row}')
-    for ws,head,widths in [(summary,5,[18,24,14,30,20,45,23,22,40]),(sheet,1,[14,32,13,18,24,22,32,22,40,30,45,23,22,20,45,40])]:
+    for ws,head,widths in [(summary,5,[18,24,14,30,20,45,23,22,40,18,23]),(sheet,1,[14,32,13,18,24,22,32,22,40,30,45,23,22,20,45,40,18,23])]:
         ws.freeze_panes=f'A{head+1}';ws.auto_filter.ref=f'A{head}:{ws.cell(ws.max_row,len(widths)).coordinate}'
         ws.sheet_view.zoomScale=90
         for col,width in enumerate(widths,1):ws.column_dimensions[ws.cell(1,col).column_letter].width=width
@@ -739,7 +764,7 @@ def snapshot_workbook(job,items,market):
         name=next((n for n in g['names'] if n),None) or next((v.get('title') for v in variants if v.get('title')),'Produktname nicht erfasst')
         complete=all(st=='Gelesen' for st in g['statuses'])
         state=snapshot_structure('Gelesen' if complete else (UNREACHABLE if all(st==UNREACHABLE for st in g['statuses']) else 'Unklar'),len(variants))
-        cards=[short_product(v.get('title') or v['asin'])+'\n'+v['asin'] for v in variants]
+        cards=[short_product(v.get('title') or v['asin'])+'\n'+v['asin']+'\n'+rating_text(v.get('rating')) for v in variants]
         rows.append([short_product(name),f'{market}-{number:03}',state,len(variants) if complete else None,', '.join(g['seeds']),'Details in Zellnotiz / Blatt Varianten' if g['notes'] else '',*cards,*(['']*(max_members-len(cards)))])
     for item in items:
         if item['market']==market and not snapshot_result(item):

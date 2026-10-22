@@ -3,11 +3,11 @@
   "version": "0.5.11",
   "launcher_protocol": 1,
   "files": {
-    "app.py": "39f7f9e3bae1f81f13661c1f21bd43cff3807d9582c614430db8c5f2bb5aff2f",
-    "core.py": "0a2d076a9d488abe6d06b1b1df2b24bd9838d727c53ba7ab6237f5b7ec5f9ad2",
+    "app.py": "7f360411dec467a3ef57c94a1a2ca4196538f66a55df9480601f6579377f9da7",
+    "core.py": "f2ee35c3077c0d1f56cc8542eafd249c13f408eabdf087f5b2fdb24e597f9ecf",
     "selftest.py": "0be83a38a768502911cc9914d82145c0152384b9eedde940e7afc29025ab1dc0",
     "templates.bundle.b64": "6ed3f839687dbd1a2456a792ec1cd7f08ce6b56a3c716aadf81e8fe95058f020",
-    "ui.html": "8722f7a4ef97bd8bf307170c855c62cf38594ecb2e1f8bf925392cdee2cfaac2",
+    "ui.html": "307e735d21e4e910abc786073c20f16368ff9731bce4396dd986d9c4ca290a96",
     "updater.py": "feca18aab3c3b4d185d8796540519519d2301c4c1260af43269a51d7833b2f67"
   }
 }

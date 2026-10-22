@@ -13,7 +13,7 @@ def main():
  def scanner(page,market,asin):
   seen_pages.add(id(page))
   page.set_content('<html lang="'+('it-IT' if market=='IT' else 'de-DE')+'"><body>Offline fixture</body></html>')
-  return {'valid':True,'title':'Testprodukt '+asin,'asins':[A,B],'attributes':{asin:{'style':'Classico' if market=='IT' else 'Klassisch','color':'Giallo' if market=='IT' else 'Gelb','size':'50 cm'}},'url':f'https://www.amazon.{"it" if market=="IT" else "de"}/dp/{asin}'}
+  return {'rating':{'stars':4.0,'count':9456},'valid':True,'title':'Testprodukt '+asin,'asins':[A,B],'attributes':{asin:{'style':'Classico' if market=='IT' else 'Klassisch','color':'Giallo' if market=='IT' else 'Gelb','size':'50 cm'}},'url':f'https://www.amazon.{"it" if market=="IT" else "de"}/dp/{asin}'}
  app.snapshot_process=lambda ident,page_for:original(ident,page_for,scanner)
  with app.db() as c:c.execute('UPDATE settings SET value=? WHERE key="config"',(json.dumps({'visible':False,'enabled':False,'time':'09:00','last_day':''}),))
  server=app.ThreadingHTTPServer(('127.0.0.1',0),app.Handler)
@@ -31,10 +31,11 @@ def main():
    shared.context.close()
    # Actual DOM extraction: complete singleton and a twister appearing late.
    fixture=browser.new_page()
-   html='<html lang="de-DE"><body><div id="ppd"><span id="productTitle">Beurer IL 11 Infrarotlampe</span><input id="ASIN" value="'+A+'"><img id="landingImage"><div id="availability">Auf Lager</div><div id="twister_feature_div"></div></div></body></html>'
+   html='<html lang="de-DE"><body><div id="ppd"><span id="productTitle">Beurer IL 11 Infrarotlampe</span><div id="averageCustomerReviews"><span id="acrPopover" title="4,0 sur 5 étoiles"></span><span id="acrCustomerReviewText">9 456 évaluations</span></div><input id="ASIN" value="'+A+'"><img id="landingImage"><div id="availability">Auf Lager</div><div id="twister_feature_div"></div></div></body></html>'
    fixture.route('**/*',lambda route:route.fulfill(status=200,content_type='text/html',body=html))
    result=app.scan_page(fixture,'DE',A)
    assert result['valid'] and result['standalone_confirmed']
+   assert result['rating']['stars']==4.0 and result['rating']['count']==9456
    fixture.unroute('**/*')
    late=html.replace('</body>', '<script>setTimeout(()=>{document.querySelector("#twister_feature_div").innerHTML='+json.dumps('<span data-asin="'+A+'"></span><span data-asin="'+B+'"></span>')+'},2000)</script></body>')
    fixture.route('**/*',lambda route:route.fulfill(status=200,content_type='text/html',body=late))
@@ -172,12 +173,15 @@ def main():
    assert len(app.snapshot_jobs())==oldjobs+1
    assert '4 / 4' in page.locator('#snapJobStatus').inner_text()
    assert page.locator('#manual #snapTable').is_visible()
+   assert '9.456 Bewertungen' in page.locator('#snapTable').inner_text()
    assert len(app.families())==2
    with page.expect_download() as info:page.locator('#combinedExcel').click()
    target=qa/'quick-test-all.xlsx';info.value.save_as(target)
    workbook=load_workbook(target)
    assert set(workbook.sheetnames)=={'Ländervergleich','DE Variationsgruppen','DE Übersicht','DE Varianten','IT Variationsgruppen','IT Übersicht','IT Varianten'}
    assert workbook['DE Varianten']['C2'].value=='DE'
+   assert workbook['DE Varianten']['Q2'].value==4.0
+   assert workbook['DE Varianten']['R2'].value==9456
    assert workbook['IT Varianten']['C2'].value=='IT'
    assert len(workbook['IT Varianten'].data_validations.dataValidation)==1
    workbook.close()

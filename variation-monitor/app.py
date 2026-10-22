@@ -351,8 +351,8 @@ def snapshot_page(q):
         if market:where+=' AND market=?';args.append(market)
         if search:where+=' AND (instr(lower(asin),lower(?))>0 OR instr(lower(name),lower(?))>0)';args.extend([search,search])
         count=c.execute('SELECT COUNT(*) FROM snapshot_items WHERE '+where,args).fetchone()[0]
-        rows=c.execute('SELECT job_id,market,asin,name,status,at,note,found FROM snapshot_items WHERE '+where+' ORDER BY position LIMIT 50 OFFSET ?',[*args,(page-1)*50]).fetchall()
-    return {'rows':[{**dict(r),'structure':snapshot_structure(r['status'],r['found'],r['note'])} for r in rows],'count':count,'page':page,'pages':max(1,(count+49)//50)}
+        rows=c.execute('SELECT job_id,market,asin,name,status,at,note,found,result FROM snapshot_items WHERE '+where+' ORDER BY position LIMIT 50 OFFSET ?',[*args,(page-1)*50]).fetchall()
+    return {'rows':[{**{k:r[k] for k in r.keys() if k!='result'},'rating':next((v.get('rating',{}) for v in (json.loads(r['result']) if r['result'] else {}).get('variants',[]) if v['asin']==r['asin']),{}),'structure':snapshot_structure(r['status'],r['found'],r['note'])} for r in rows],'count':count,'page':page,'pages':max(1,(count+49)//50)}
 
 def adopt_snapshot(d):
     with LOCK:
