@@ -561,6 +561,43 @@ def add_comparison_sheet(wb,items,markets):
     return add_report_sheet(wb,'Ländervergleich',['Produkt / Name aus Liste','Eingabe-ASIN','Ergebnis','Gleiche Zusammensetzung','Unklare / offene Länder',*markets],rows,[42,18,28,32,24]+[48]*len(markets),'Pro Eingabeprodukt: gleiche Gruppe A/B/... bedeutet dieselben enthaltenen ASINs innerhalb dieser Zeile. Namen, Farbe, Stil und Größe beeinflussen den Vergleich nicht. Unvollständige Ergebnisse gelten nie als einheitlich. Keine Variation – Einzelprodukt = nur die Eingabe-ASIN gefunden. Vergleich der gespeicherten Zeitpunkte.')
 
 
+def snapshot_combined_workbook(job,items,markets):
+    """One saved-data workbook: country comparison, then each country's reports."""
+    from copy import copy, deepcopy
+    from openpyxl import Workbook, load_workbook
+    wb=Workbook();wb.remove(wb.active)
+    add_comparison_sheet(wb,items,markets)
+    for market in markets:
+        source=load_workbook(io.BytesIO(snapshot_workbook(job,items,market)))
+        try:
+            for original in source:
+                if original.title=='Ländervergleich':continue
+                target=wb.create_sheet(market+' '+original.title)
+                for row in original:
+                    for cell in row:
+                        if cell.__class__.__name__=='MergedCell':continue
+                        dest=target.cell(cell.row,cell.column,cell.value)
+                        dest.data_type=cell.data_type
+                        for prop in ('font','fill','border','alignment','protection'):
+                            setattr(dest,prop,copy(getattr(cell,prop)))
+                        dest.number_format=cell.number_format
+                        if cell.hyperlink:dest.hyperlink=copy(cell.hyperlink)
+                        if cell.comment:dest.comment=copy(cell.comment)
+                for key,dim in original.column_dimensions.items():target.column_dimensions[key]=copy(dim)
+                for key,dim in original.row_dimensions.items():target.row_dimensions[key]=copy(dim)
+                for merged in original.merged_cells.ranges:target.merge_cells(str(merged))
+                target.freeze_panes=original.freeze_panes
+                target.auto_filter=deepcopy(original.auto_filter)
+                target.data_validations=deepcopy(original.data_validations)
+                target.sheet_view.showGridLines=original.sheet_view.showGridLines
+                target.sheet_properties=deepcopy(original.sheet_properties)
+                target.page_setup=copy(original.page_setup)
+                target.print_options=copy(original.print_options)
+                target.page_margins=copy(original.page_margins)
+        finally:source.close()
+    output=io.BytesIO();wb.save(output);wb.close();return output.getvalue()
+
+
 def snapshot_workbook(job,items,market):
     """Runtime Excel export using the app's already bundled Excel dependency."""
     from openpyxl import Workbook
@@ -657,4 +694,5 @@ def snapshot_workbook(job,items,market):
     wb._sheets=[grouped,wb['Ländervergleich'],summary,sheet]
     wb.active=0
     result=io.BytesIO();wb.save(result);wb.close();return result.getvalue()
+
 

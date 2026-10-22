@@ -5,7 +5,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse, parse_qs
-from core import parse_import, parse_manual, evaluate, scan_page, ASIN, MARKETS, parse_family, dimension_key, market_browser_options, parse_snapshot_input, collect_snapshot, SnapshotCancelled, snapshot_workbook, snapshot_comparison, snapshot_structure, snapshot_baseline, accepted_deviation_groups
+from core import parse_import, parse_manual, evaluate, scan_page, ASIN, MARKETS, parse_family, dimension_key, market_browser_options, parse_snapshot_input, collect_snapshot, SnapshotCancelled, snapshot_workbook,snapshot_combined_workbook, snapshot_comparison, snapshot_structure, snapshot_baseline, accepted_deviation_groups
 
 ROOT=Path(__file__).resolve().parent
 DATA=Path(os.environ.get('LOCALAPPDATA', str(Path.home()))) / 'AmazonVariationMonitor'
@@ -145,7 +145,7 @@ class Handler(BaseHTTPRequestHandler):
                     item['structure']=snapshot_structure(item['status'],len(set((item['result'] or {}).get('asins') or [])))
                     return self.send(item)
                 if path=='/api/snapshot/export':
-                    content,kind=snapshot_export(q.get('id'),q.get('market',''))
+                    content,kind=snapshot_export(q.get('id'),q.get('market',''),q.get('format',''))
                     return self.send(content,kind)
                 if path=='/api/snapshot':return self.send(snapshot_page(q))
                 raise ValueError('Unbekannte Ist-Aufnahme-Aktion.')
@@ -490,9 +490,10 @@ def snapshot_data(ident):
         items=[dict(r) for r in c.execute('SELECT * FROM snapshot_items WHERE job_id=? ORDER BY position',(ident,))]
     return job,items
 
-def snapshot_export(ident,market=''):
+def snapshot_export(ident,market='',format=''):
     job,items=snapshot_data(ident);markets=json.loads(job['markets'])
     if market and market not in markets:raise ValueError('Marktplatz gehört nicht zu dieser Aufnahme.')
+    if format=='xlsx':return snapshot_combined_workbook(job,items,markets),'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
     if market:return snapshot_workbook(job,items,market),'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
     output=io.BytesIO()
     with zipfile.ZipFile(output,'w',zipfile.ZIP_DEFLATED) as z:
@@ -536,5 +537,6 @@ if __name__=='__main__':
         tk.Button(root,text='App erneut öffnen',command=lambda:webbrowser.open(url)).pack()
         root.mainloop()
     finally:server.shutdown()
+
 
 

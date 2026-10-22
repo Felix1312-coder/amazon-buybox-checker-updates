@@ -143,6 +143,37 @@ def main():
    with app.db() as c:assert c.execute('SELECT COUNT(*) FROM checks').fetchone()[0]==1
 
 
+   page.locator('#nav-manual').click()
+   assert page.locator('#manual #snapshotResults').count()==1
+   page.locator('#quickAsins').fill(A+'; '+B+'\n'+A.lower())
+   page.locator('#manual').get_by_role('button',name='Alle abwählen',exact=True).click()
+   assert not page.locator('#quickStart').is_enabled()
+   page.locator('#quickMarkets input[value=DE]').check()
+   page.locator('#quickMarkets input[value=IT]').check()
+   assert '2 eindeutige ASINs × 2 Länder = 4 Prüfungen' in page.locator('#quickHint').inner_text()
+   page.locator('#quickAsins').fill('invalid')
+   assert not page.locator('#quickStart').is_enabled()
+   page.locator('#quickAsins').fill(A+'; '+B+'\n'+A.lower())
+   oldjobs=len(app.snapshot_jobs())
+   page.locator('#quickStart').click()
+   page.wait_for_function("document.querySelector('#snapJobs').selectedOptions[0].textContent.includes('Schnelltest') && document.querySelector('#snapJobStatus').innerText.includes('Abgeschlossen')",timeout=90000)
+   assert len(app.snapshot_jobs())==oldjobs+1
+   assert '4 / 4' in page.locator('#snapJobStatus').inner_text()
+   assert page.locator('#manual #snapTable').is_visible()
+   assert len(app.families())==2
+   with page.expect_download() as info:page.locator('#combinedExcel').click()
+   target=qa/'quick-test-all.xlsx';info.value.save_as(target)
+   workbook=load_workbook(target)
+   assert set(workbook.sheetnames)=={'Ländervergleich','DE Variationsgruppen','DE Übersicht','DE Varianten','IT Variationsgruppen','IT Übersicht','IT Varianten'}
+   assert workbook['DE Varianten']['C2'].value=='DE'
+   assert workbook['IT Varianten']['C2'].value=='IT'
+   assert len(workbook['IT Varianten'].data_validations.dataValidation)==1
+   workbook.close()
+   page.locator('#nav-snapshots').click()
+   assert page.locator('#snapshots #snapshotResults').count()==1
+   page.locator('#nav-manual').click()
+   page.screenshot(path=str(qa/'quick-test.png'),full_page=True)
+   assert page.locator('#quickAsins').input_value().startswith(A)
    browser.close()
   (qa/'snapshot-qa.json').write_text(json.dumps({'ok':True,'checks':['CSV upload and preview','Selected IT + DE Cartesian product','No selection disables start','Live progress and persisted results','Child ASIN style/color/size display','Filter does not limit export','One XLSX per market','ZIP contains both markets','Deduplicated family export','No Soll modifications']},indent=2))
  finally:server.shutdown()
@@ -151,3 +182,4 @@ if __name__=='__main__':
  with tempfile.TemporaryDirectory() as tmp:
   os.environ['LOCALAPPDATA']=tmp
   main()
+
