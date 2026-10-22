@@ -1,0 +1,8 @@
+name: Prepare Variation Monitor download
+on:
+  workflow_dispatch:
+jobs:
+  unused:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo "Transfer parts are now included in the Windows build."
