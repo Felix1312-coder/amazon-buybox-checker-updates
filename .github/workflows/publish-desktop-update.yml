@@ -1,0 +1,23 @@
+name: Publish verified desktop updates
+on:
+  push:
+    branches: [release-transfer-20261027]
+    paths: [release-transfer/READY]
+permissions:
+  contents: write
+concurrency:
+  group: desktop-update-transfer-20261027
+  cancel-in-progress: false
+jobs:
+  publish:
+    if: github.repository == 'Felix1312-coder/amazon-buybox-checker-updates' && github.ref == 'refs/heads/release-transfer-20261027'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Read verified transfer
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          fetch-depth: 1
+          persist-credentials: true
+      - name: Verify and publish the four update files
+        run: python3 release-transfer/publish.py
