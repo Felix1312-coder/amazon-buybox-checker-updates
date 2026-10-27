@@ -1,15 +1,18 @@
 #!/usr/bin/env python3
-"""Publish only the four reviewed encrypted updater artifacts. No signing secrets."""
+"""Publish only the two reviewed Cockpit updater artifacts. No signing secrets."""
 import base64
 import hashlib
 import os
 from pathlib import Path
-import re
 import subprocess
 import tempfile
 
 TARGET = "refs/heads/felix-desktop-updates"
-EXPECTED = {'product-cockpit/1.3.0.bundle.txt': (375429, '71bb94d85eff54f2f151d6565066e5ca1938eeb0037662467e400180f54f8d12'), 'product-cockpit/latest.json': (818, '9f2536e43d47c4f7ed8beb5fe0324a822b90689fcb396af2eb7e240369722660'), 'workspace/0.2.72.bundle.gz': (3713402, 'b539b500b1631f157bb6ca5403476c763e4fcd9911594f333a7c41e3794fb79b'), 'workspace/latest.json': (741, 'aa575ac7234e4b69f93c36f8ad3760163967c3ac12f2274505dde1fda4e50053')}
+EXPECTED = {'product-cockpit/1.3.1.bundle.txt': (504153, 'dd9c6b189232569b0e09cb9f94bf9870fbf1b817c5c28063caee1044e207b1c6'), 'product-cockpit/latest.json': (818, '58ca17a07c7aa08291d24edc39a0617ad12d7fd3055d02c7c5d809cd143e97df')}
+PART_COUNT = 6
+PREFIX = "cockpit-1.3.1-part"
+PREVIOUS_MANIFEST = "36536a6859bb31fe2460bd948593483804f39e2d"
+
 
 def git(*args, data=None, env=None):
     result = subprocess.run(["git", *args], input=data, stdout=subprocess.PIPE,
@@ -20,25 +23,26 @@ def git(*args, data=None, env=None):
 
 
 def payloads(folder):
-    def assemble(prefix):
-        parts = sorted(folder.glob(prefix + "-*.b64"))
-        if not 1 <= len(parts) <= 128:
-            raise ValueError("Missing transfer pieces")
-        blocks = []
-        for index, file in enumerate(parts):
-            if file.name != f"{prefix}-{index:03d}.b64":
-                raise ValueError("Missing or unexpected transfer piece")
-            raw = file.read_bytes().strip()
-            if not raw or len(raw) > 256 * 1024:
-                raise ValueError("Invalid transfer piece size")
-            blocks.append(base64.b64decode(raw, validate=True))
-        return b"".join(blocks)
+    parts = sorted(folder.glob(PREFIX + "-*.b64"))
+    if len(parts) != PART_COUNT or not 1 <= PART_COUNT <= 128:
+        raise ValueError("Missing or unexpected transfer pieces")
+    blocks = []
+    for index, file in enumerate(parts):
+        if file.name != f"{PREFIX}-{index:03d}.b64":
+            raise ValueError("Missing or unexpected transfer piece")
+        raw = file.read_bytes().strip()
+        if not raw or len(raw) > 128 * 1024:
+            raise ValueError("Invalid transfer piece size")
+        block = base64.b64decode(raw, validate=True)
+        if len(block) > 98304 or (index < PART_COUNT - 1 and len(block) != 98304):
+            raise ValueError("Invalid decoded transfer piece size")
+        blocks.append(block)
     files = {
-        "product-cockpit/1.3.0.bundle.txt": assemble("cockpit-part"),
-        "product-cockpit/latest.json": (folder / "cockpit.latest.json").read_bytes(),
-        "workspace/0.2.72.bundle.gz": assemble("workspace-part"),
-        "workspace/latest.json": (folder / "workspace.latest.json").read_bytes(),
+        "product-cockpit/1.3.1.bundle.txt": b"".join(blocks),
+        "product-cockpit/latest.json": (folder / "cockpit-1.3.1.latest.json").read_bytes(),
     }
+    if set(EXPECTED) != set(files):
+        raise ValueError("Unexpected approved publication path")
     for name, data in files.items():
         size, digest = EXPECTED[name]
         if len(data) != size or hashlib.sha256(data).hexdigest() != digest:
@@ -48,7 +52,7 @@ def payloads(folder):
 
 def publish(folder):
     files = payloads(folder)
-    print("Verified all four encrypted update artifacts.", flush=True)
+    print("Verified both encrypted Cockpit update artifacts.", flush=True)
     blobs = {name: git("hash-object", "-w", "--stdin", data=data) for name, data in files.items()}
     with tempfile.TemporaryDirectory(prefix="update-index-") as tmp:
         env = dict(os.environ, GIT_INDEX_FILE=str(Path(tmp) / "index"),
@@ -57,23 +61,24 @@ def publish(folder):
         for attempt in range(3):
             git("fetch", "--no-tags", "--depth=1", "origin", TARGET)
             parent = git("rev-parse", "FETCH_HEAD")
-            predecessors = {"product-cockpit/latest.json": "9afecb5f054c63d4755bbad6557f62fee7c2c3cf", "workspace/latest.json": "51d66e87ef624ff82f8609faa62ac71eee42a7df"}
-            for name, previous in predecessors.items():
-                current = git("rev-parse", parent + ":" + name)
-                if current not in {previous, blobs[name]}:
-                    raise RuntimeError("Another release changed the update channel; refusing to overwrite " + name)
+            current = git("rev-parse", parent + ":product-cockpit/latest.json")
+            if current not in {PREVIOUS_MANIFEST, blobs["product-cockpit/latest.json"]}:
+                raise RuntimeError("Another release changed the Cockpit update channel; refusing to overwrite")
             git("read-tree", parent, env=env)
             for name, blob in blobs.items():
                 git("update-index", "--add", "--cacheinfo", f"100644,{blob},{name}", env=env)
             tree = git("write-tree", env=env)
             changed = set(git("diff-tree", "--no-commit-id", "--name-only", "-r", parent, tree).splitlines())
             if not changed:
-                print("All four updates are already published at " + parent, flush=True)
+                print("Both Cockpit artifacts are already published at " + parent, flush=True)
                 return parent
             if not changed <= set(EXPECTED):
                 raise RuntimeError("Unexpected path in publication")
+            # An unrelated Workspace release is preserved from the fresh parent.
+            if git("rev-parse", parent + ":workspace") != git("rev-parse", tree + ":workspace"):
+                raise RuntimeError("Workspace tree unexpectedly changed")
             commit = git("commit-tree", tree, "-p", parent,
-                         "-m", "Publish Product Cockpit 1.3.0 and Workspace 0.2.72", env=env)
+                         "-m", "Fix Product Cockpit 1.3.1 embedded EWS product links", env=env)
             try:
                 git("push", "origin", commit + ":" + TARGET)
             except RuntimeError:
@@ -81,7 +86,7 @@ def publish(folder):
                     raise
                 print("Target changed or push failed; rebuilding against the current branch.", flush=True)
                 continue
-            print("Published four verified update artifacts at " + commit, flush=True)
+            print("Published two verified Cockpit update artifacts at " + commit, flush=True)
             return commit
     raise RuntimeError("Publication failed")
 
