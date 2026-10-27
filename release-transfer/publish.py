@@ -9,7 +9,7 @@ import subprocess
 import tempfile
 
 TARGET = "refs/heads/felix-desktop-updates"
-EXPECTED = {'product-cockpit/1.2.0.bundle.txt': (152817, 'eb264a269ff8fd37b5325fca4662691361fbb3cc16d4906a54c47c395598ddba'), 'product-cockpit/latest.json': (818, '4c7241e02215fa87c7d2fe547d5462e024dede9964364cc9f18488fbd7074ef9'), 'workspace/0.2.71.bundle.gz': (3673405, '223e4408984922886d029f88e2bf9796dc3fe1b5d7648b36b8548cb729097fdd'), 'workspace/latest.json': (741, '5f0ec43e811896aaeff85cf275f613bb59bd35089682268cce2c3028c314b32e')}
+EXPECTED = {'product-cockpit/1.3.0.bundle.txt': (375429, '71bb94d85eff54f2f151d6565066e5ca1938eeb0037662467e400180f54f8d12'), 'product-cockpit/latest.json': (818, '9f2536e43d47c4f7ed8beb5fe0324a822b90689fcb396af2eb7e240369722660'), 'workspace/0.2.72.bundle.gz': (3713402, 'b539b500b1631f157bb6ca5403476c763e4fcd9911594f333a7c41e3794fb79b'), 'workspace/latest.json': (741, 'aa575ac7234e4b69f93c36f8ad3760163967c3ac12f2274505dde1fda4e50053')}
 
 def git(*args, data=None, env=None):
     result = subprocess.run(["git", *args], input=data, stdout=subprocess.PIPE,
@@ -20,21 +20,23 @@ def git(*args, data=None, env=None):
 
 
 def payloads(folder):
-    parts = sorted(folder.glob("part-*.b64"))
-    if not 1 <= len(parts) <= 128:
-        raise ValueError("Missing transfer pieces")
-    blocks = []
-    for index, file in enumerate(parts):
-        if file.name != f"part-{index:03d}.b64":
-            raise ValueError("Missing or unexpected transfer piece")
-        raw = file.read_bytes().strip()
-        if not raw or len(raw) > 256 * 1024:
-            raise ValueError("Invalid transfer piece size")
-        blocks.append(base64.b64decode(raw, validate=True))
+    def assemble(prefix):
+        parts = sorted(folder.glob(prefix + "-*.b64"))
+        if not 1 <= len(parts) <= 128:
+            raise ValueError("Missing transfer pieces")
+        blocks = []
+        for index, file in enumerate(parts):
+            if file.name != f"{prefix}-{index:03d}.b64":
+                raise ValueError("Missing or unexpected transfer piece")
+            raw = file.read_bytes().strip()
+            if not raw or len(raw) > 256 * 1024:
+                raise ValueError("Invalid transfer piece size")
+            blocks.append(base64.b64decode(raw, validate=True))
+        return b"".join(blocks)
     files = {
-        "product-cockpit/1.2.0.bundle.txt": (folder / "cockpit.bundle.txt").read_bytes(),
+        "product-cockpit/1.3.0.bundle.txt": assemble("cockpit-part"),
         "product-cockpit/latest.json": (folder / "cockpit.latest.json").read_bytes(),
-        "workspace/0.2.71.bundle.gz": b"".join(blocks),
+        "workspace/0.2.72.bundle.gz": assemble("workspace-part"),
         "workspace/latest.json": (folder / "workspace.latest.json").read_bytes(),
     }
     for name, data in files.items():
@@ -55,7 +57,7 @@ def publish(folder):
         for attempt in range(3):
             git("fetch", "--no-tags", "--depth=1", "origin", TARGET)
             parent = git("rev-parse", "FETCH_HEAD")
-            predecessors = {"product-cockpit/latest.json": "1ee90fca7c65b5e17b244206bfbfe56249f9f893", "workspace/latest.json": "f36c505cefcfcd6a2f04b02be29b2f3d178360e7"}
+            predecessors = {"product-cockpit/latest.json": "9afecb5f054c63d4755bbad6557f62fee7c2c3cf", "workspace/latest.json": "51d66e87ef624ff82f8609faa62ac71eee42a7df"}
             for name, previous in predecessors.items():
                 current = git("rev-parse", parent + ":" + name)
                 if current not in {previous, blobs[name]}:
@@ -71,7 +73,7 @@ def publish(folder):
             if not changed <= set(EXPECTED):
                 raise RuntimeError("Unexpected path in publication")
             commit = git("commit-tree", tree, "-p", parent,
-                         "-m", "Publish Product Cockpit 1.2.0 and Workspace 0.2.71", env=env)
+                         "-m", "Publish Product Cockpit 1.3.0 and Workspace 0.2.72", env=env)
             try:
                 git("push", "origin", commit + ":" + TARGET)
             except RuntimeError:
