@@ -9,12 +9,7 @@ import subprocess
 import tempfile
 
 TARGET = "refs/heads/felix-desktop-updates"
-EXPECTED = {
-    "product-cockpit/1.1.0.bundle.txt": (140313, "8d3a1fbb05266e90bb79dfd712e1e09bc0b97008a57e34e6e62622eec4e87b32"),
-    "product-cockpit/latest.json": (818, "8b67c9baf7ffdc76f19ee5feb4f3362dd89a5b832aacb54125df8ecafb710500"),
-    "workspace/0.2.70.bundle.gz": (3649189, "6ed3c656f751c91fc1b1d2e66f2f47982a4b47e65722d9221e198beb4aea882d"),
-    "workspace/latest.json": (741, "c8dd5f59a0fb3c26aa93f994ec116df875e4ee7a583afaaa0c5f12d8d448805e"),
-}
+EXPECTED = {'product-cockpit/1.2.0.bundle.txt': (152817, 'eb264a269ff8fd37b5325fca4662691361fbb3cc16d4906a54c47c395598ddba'), 'product-cockpit/latest.json': (818, '4c7241e02215fa87c7d2fe547d5462e024dede9964364cc9f18488fbd7074ef9'), 'workspace/0.2.71.bundle.gz': (3673405, '223e4408984922886d029f88e2bf9796dc3fe1b5d7648b36b8548cb729097fdd'), 'workspace/latest.json': (741, '5f0ec43e811896aaeff85cf275f613bb59bd35089682268cce2c3028c314b32e')}
 
 def git(*args, data=None, env=None):
     result = subprocess.run(["git", *args], input=data, stdout=subprocess.PIPE,
@@ -37,9 +32,9 @@ def payloads(folder):
             raise ValueError("Invalid transfer piece size")
         blocks.append(base64.b64decode(raw, validate=True))
     files = {
-        "product-cockpit/1.1.0.bundle.txt": (folder / "cockpit.bundle.txt").read_bytes(),
+        "product-cockpit/1.2.0.bundle.txt": (folder / "cockpit.bundle.txt").read_bytes(),
         "product-cockpit/latest.json": (folder / "cockpit.latest.json").read_bytes(),
-        "workspace/0.2.70.bundle.gz": b"".join(blocks),
+        "workspace/0.2.71.bundle.gz": b"".join(blocks),
         "workspace/latest.json": (folder / "workspace.latest.json").read_bytes(),
     }
     for name, data in files.items():
@@ -60,6 +55,11 @@ def publish(folder):
         for attempt in range(3):
             git("fetch", "--no-tags", "--depth=1", "origin", TARGET)
             parent = git("rev-parse", "FETCH_HEAD")
+            predecessors = {"product-cockpit/latest.json": "1ee90fca7c65b5e17b244206bfbfe56249f9f893", "workspace/latest.json": "f36c505cefcfcd6a2f04b02be29b2f3d178360e7"}
+            for name, previous in predecessors.items():
+                current = git("rev-parse", parent + ":" + name)
+                if current not in {previous, blobs[name]}:
+                    raise RuntimeError("Another release changed the update channel; refusing to overwrite " + name)
             git("read-tree", parent, env=env)
             for name, blob in blobs.items():
                 git("update-index", "--add", "--cacheinfo", f"100644,{blob},{name}", env=env)
@@ -71,7 +71,7 @@ def publish(folder):
             if not changed <= set(EXPECTED):
                 raise RuntimeError("Unexpected path in publication")
             commit = git("commit-tree", tree, "-p", parent,
-                         "-m", "Publish Product Cockpit 1.1.0 and Workspace 0.2.70", env=env)
+                         "-m", "Publish Product Cockpit 1.2.0 and Workspace 0.2.71", env=env)
             try:
                 git("push", "origin", commit + ":" + TARGET)
             except RuntimeError:
