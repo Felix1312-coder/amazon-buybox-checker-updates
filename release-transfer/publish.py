@@ -8,10 +8,10 @@ import subprocess
 import tempfile
 
 TARGET = "refs/heads/felix-desktop-updates"
-EXPECTED = {'product-cockpit/1.3.1.bundle.txt': (504153, 'dd9c6b189232569b0e09cb9f94bf9870fbf1b817c5c28063caee1044e207b1c6'), 'product-cockpit/latest.json': (818, '58ca17a07c7aa08291d24edc39a0617ad12d7fd3055d02c7c5d809cd143e97df')}
+EXPECTED = {'product-cockpit/1.3.2.bundle.txt': (505709, '7cd7cad2a457b3d2084d69b1362a58f569f8fc3f8302ca712dace11e633c2d75'), 'product-cockpit/latest.json': (818, '464f34614c0c1285155e0b187f762dddee55c3a8957595dbcc26ee6010f0e916')}
 PART_COUNT = 6
-PREFIX = "cockpit-1.3.1-part"
-PREVIOUS_MANIFEST = "36536a6859bb31fe2460bd948593483804f39e2d"
+PREFIX = "cockpit-1.3.2-part"
+PREVIOUS_MANIFEST = "0cada21aa80900456610a830ae67853ca6183149"
 
 
 def git(*args, data=None, env=None):
@@ -38,8 +38,8 @@ def payloads(folder):
             raise ValueError("Invalid decoded transfer piece size")
         blocks.append(block)
     files = {
-        "product-cockpit/1.3.1.bundle.txt": b"".join(blocks),
-        "product-cockpit/latest.json": (folder / "cockpit-1.3.1.latest.json").read_bytes(),
+        "product-cockpit/1.3.2.bundle.txt": b"".join(blocks),
+        "product-cockpit/latest.json": (folder / "cockpit-1.3.2.latest.json").read_bytes(),
     }
     if set(EXPECTED) != set(files):
         raise ValueError("Unexpected approved publication path")
@@ -78,7 +78,7 @@ def publish(folder):
             if git("rev-parse", parent + ":workspace") != git("rev-parse", tree + ":workspace"):
                 raise RuntimeError("Workspace tree unexpectedly changed")
             commit = git("commit-tree", tree, "-p", parent,
-                         "-m", "Fix Product Cockpit 1.3.1 embedded EWS product links", env=env)
+                         "-m", "Pause automatic Cockpit checks in 1.3.2; preserve independent Workspace schedules", env=env)
             try:
                 git("push", "origin", commit + ":" + TARGET)
             except RuntimeError:
